@@ -1,6 +1,6 @@
 'use strict';
 /*
- * DUKE NUTANIX — raycasting engine, Duke Nukem spirit, set in datacenters.
+ * DUKE NUTANIX: raycasting engine, Duke Nukem spirit, set in datacenters.
  * Software rendering into a 480x230 buffer (3D view) + high-resolution HUD.
  */
 
@@ -1381,7 +1381,7 @@ function drawOverlayText(g) {
     g.fillStyle = '#7a0f0f'; g.fillRect(W / 2 - 100, 22, 200, 8);
     g.fillStyle = '#ff2a2a'; g.fillRect(W / 2 - 100, 22, 200 * f, 8);
     g.font = `5px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#fff';
-    g.fillText(`${T.name} — ${T.tag}`, W / 2, 18);
+    g.fillText(`${T.name}: ${T.tag}`, W / 2, 18);
   }
 }
 
@@ -1407,7 +1407,7 @@ function drawMap(g) {
   g.lineTo(px + Math.cos(P.a - 2.5) * 4, py + Math.sin(P.a - 2.5) * 4);
   g.fill();
   g.font = `6px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#3dff6a';
-  g.fillText('DATACENTER MAP — ' + L.def.name, W / 2, 12);
+  g.fillText('DATACENTER MAP: ' + L.def.name, W / 2, 12);
 }
 
 function present() {
@@ -1536,7 +1536,7 @@ function showTitle() {
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.fillStyle = '#000'; vctx.fillRect(0, 0, view.width, view.height);
   const s = readSave();
-  const cont = s ? `<button data-act="continueGame" class="big">CONTINUE — ${getLevel(s.level).code}</button>` : '';
+  const cont = s ? `<button data-act="continueGame" class="big">CONTINUE ${getLevel(s.level).code}</button>` : '';
   showPanel(`
     <h1 class="logo">DUKE <span class="ntnx">NUTANI<span class="x">X</span></span></h1>
     <h2>THE ADMIN IS BACK<br><span class="ok">AND HE HASN'T HAD HIS COFFEE</span></h2>
@@ -1580,7 +1580,7 @@ function startLevel(idx) {
   showPanel(`
     <h2>${L.def.name}<br><span class="ep">EPISODE ${L.def.episode + 1}: ${EPISODES[L.def.episode].name}</span></h2>
     <p class="story">${L.def.intro}</p>
-    <p class="story small">Racks to migrate to Nutanix: ${L.totalSpecials} — Secret areas: ${L.totalSecrets}</p>
+    <p class="story small">Racks to migrate to Nutanix: ${L.totalSpecials} | Secret areas: ${L.totalSecrets}</p>
     <button data-go class="big">ENTER</button>
   `, () => { hidePanel(); state = 'playing'; lockPointer(); quip('start', 0.9, true); });
 }
@@ -1591,8 +1591,8 @@ function pauseGame() {
   firing = false;
   showPanel(`
     <h2>PAUSE</h2>
-    <p class="story">${L.def.name}<br>Enemies ${L.kills}/${L.totalKills} — Items ${L.itemsGot}/${L.totalItems} — Secrets ${L.secrets}/${L.totalSecrets}<br>
-    Nutanix migrations ${L.migrated}/${L.totalSpecials} — ${fmtTime(L.time)}</p>
+    <p class="story">${L.def.name}<br>Enemies ${L.kills}/${L.totalKills} | Items ${L.itemsGot}/${L.totalItems} | Secrets ${L.secrets}/${L.totalSecrets}<br>
+    Nutanix migrations ${L.migrated}/${L.totalSpecials} | ${fmtTime(L.time)}</p>
     <button data-act="resume" class="big">RESUME</button>
     <button data-act="restart">RESTART LEVEL</button>
     <button data-act="title">MAIN MENU</button>
@@ -1614,7 +1614,7 @@ function showDeath() {
   document.exitPointerLock && document.exitPointerLock();
   showPanel(`
     <h1 class="dead">SYSTEM COMPROMISED</h1>
-    <p class="story">Kernel panic: the on-call admin is not responding.<br>Enemies ${L.kills}/${L.totalKills} — ${fmtTime(L.time)}</p>
+    <p class="story">Kernel panic: the on-call admin is not responding.<br>Enemies ${L.kills}/${L.totalKills} | ${fmtTime(L.time)}</p>
     <button data-act="restart" class="big">RESTORE SNAPSHOT</button>
     <button data-act="title">MAIN MENU</button>
   `);
@@ -1626,7 +1626,7 @@ function completeLevel() {
   state = 'intermission';
   firing = false;
   document.exitPointerLock && document.exitPointerLock();
-  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : 'N/A';
   const lastLevel = L.idx === LEVEL_COUNT - 1;
   if (!lastLevel) {
     const next = cloneInv(INV);
@@ -1655,7 +1655,7 @@ function completeLevel() {
   }
   const epDone = L.idx % 10 === 9;
   showPanel(`
-    <h2>${L.def.name}<br><span class="ok">— REBOOTED —</span></h2>
+    <h2>${L.def.name}<br><span class="ok">REBOOTED</span></h2>
     ${epDone ? `<p class="story"><b>EPISODE ${L.def.episode + 1} COMPLETE!</b> Next stop: ${EPISODES[L.def.episode + 1].name}.</p>` : ''}
     ${stats}
     <button data-go class="big">NEXT ROOM</button>

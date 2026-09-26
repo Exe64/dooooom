@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/banner.jpg" alt="Duke Nutanix — The admin is back" width="100%">
+  <img src="docs/banner.jpg" alt="Duke Nutanix: The admin is back" width="100%">
 </p>
 
-# DUKE NUTANIX — The admin is back
+# DUKE NUTANIX: The admin is back
 
 A retro first-person shooter that runs in the browser, in the spirit of Duke Nukem 3D, where every level is a datacenter.
 A ransomware has seized the server rooms and its corrupted processes have taken physical form between the racks.
@@ -57,7 +57,7 @@ and in the end-of-level summary.
 
 | # | Weapon | Ammo |
 | --- | --- | --- |
-| 1 | Mechanical keyboard (also the migration tool) | — |
+| 1 | Mechanical keyboard (also the migration tool) | none |
 | 2 | Cage nut pistol | M6 cage nuts |
 | 3 | Packet shotgun | jumbo frames |
 | 4 | Gatling riveter (cage nuts) | M6 cage nuts |
