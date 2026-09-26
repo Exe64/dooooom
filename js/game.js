@@ -1,6 +1,6 @@
 'use strict';
 /*
- * DOOOOOM — moteur de raycasting, esprit Duke Nukem, dans les datacenters.
+ * DUKE NUTANIX — moteur de raycasting, esprit Duke Nukem, dans les datacenters.
  * Rendu logiciel dans un buffer 480x230 (vue 3D) + HUD en haute résolution.
  */
 
@@ -1468,7 +1468,7 @@ function frame(ts) {
 
 /* ---------------------------------------------------------- sauvegarde */
 
-const SAVE_KEY = 'dooooom.save';
+const SAVE_KEY = 'dukenutanix.save';
 function readSave() {
   try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || null; } catch (e) { return null; }
 }
@@ -1538,7 +1538,7 @@ function showTitle() {
   const s = readSave();
   const cont = s ? `<button data-act="continueGame" class="big">CONTINUER — ${getLevel(s.level).code}</button>` : '';
   showPanel(`
-    <h1 class="logo">DOOOOOM</h1>
+    <h1 class="logo">DUKE <span class="ntnx">NUTANI<span class="x">X</span></span></h1>
     <h2>L'ADMIN EST DE RETOUR<br><span class="ok">ET IL N'A PAS EU SON CAFÉ</span></h2>
     <p class="story">Un ransomware s'est emparé du datacenter et ses processus corrompus ont pris
     forme physique entre les baies. Armé d'un pistolet à <b>écrous cagés</b>, de disques durs
@@ -1600,7 +1600,7 @@ function pauseGame() {
     ${CONTROLS}
   `);
   const s = document.getElementById('sens');
-  s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dooooom.sens', s.value); } catch (e) { /* ignoré */ } };
+  s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dukenutanix.sens', s.value); } catch (e) { /* ignoré */ } };
 }
 
 function resumeGame() {
@@ -1704,7 +1704,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'v' || e.key === 'V') {
     voiceOn = !voiceOn;
     if (!voiceOn && window.speechSynthesis) speechSynthesis.cancel();
-    try { localStorage.setItem('dooooom.voice', voiceOn ? '1' : '0'); } catch (err) { /* ignoré */ }
+    try { localStorage.setItem('dukenutanix.voice', voiceOn ? '1' : '0'); } catch (err) { /* ignoré */ }
     msg(voiceOn ? "Voix de l'admin activée" : "Voix de l'admin coupée (sous-titres conservés)");
   }
 });
@@ -1746,17 +1746,29 @@ document.addEventListener('pointerlockchange', () => {
 
 /* ------------------------------------------------------------ démarrage */
 
+// Reprend les sauvegardes et réglages enregistrés sous l'ancien nom du jeu (DOOOOOM).
+function migrateStorage() {
+  try {
+    for (const k of ['save', 'sens', 'voice']) {
+      const old = localStorage.getItem('dooooom.' + k);
+      if (old !== null && localStorage.getItem('dukenutanix.' + k) === null) localStorage.setItem('dukenutanix.' + k, old);
+      localStorage.removeItem('dooooom.' + k);
+    }
+  } catch (e) { /* stockage indisponible */ }
+}
+
 function boot() {
   resize();
+  migrateStorage();
   try {
-    const s = localStorage.getItem('dooooom.sens'); if (s) sensitivity = +s;
-    if (localStorage.getItem('dooooom.voice') === '0') voiceOn = false;
+    const s = localStorage.getItem('dukenutanix.sens'); if (s) sensitivity = +s;
+    if (localStorage.getItem('dukenutanix.voice') === '0') voiceOn = false;
   } catch (e) { /* ignoré */ }
   buildAssets();
   showTitle();
   requestAnimationFrame(frame);
   // accès de débogage pour les tests automatisés
-  window.__dooooom = { get L() { return L; }, P, get INV() { return INV; }, get state() { return state; }, actions, keys, castRay };
+  window.__duke = { get L() { return L; }, P, get INV() { return INV; }, get state() { return state; }, actions, keys, castRay };
 }
 
 if (document.fonts && document.fonts.load) {
