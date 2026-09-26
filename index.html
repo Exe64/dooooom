@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DOOOOOM — L'enfer du datacenter</title>
-  <meta name="description" content="FPS rétro dans le navigateur, façon Doom, dont les niveaux sont des datacenters.">
+  <title>DOOOOOM — L'admin est de retour</title>
+  <meta name="description" content="FPS rétro dans le navigateur, esprit Duke Nukem, 50 niveaux de datacenters.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
@@ -55,6 +55,15 @@
     table.stats td { padding: 0 16px; }
     table.stats td:first-child { color: #9aa3ad; text-align: left; }
     table.stats td:last-child { color: var(--red); text-align: right; }
+    h3 { color: #ffe14a; font-size: 9px; margin: 18px 0 8px; text-align: left; }
+    .ep { color: #9aa3ad; font-size: 0.7em; }
+    .story.small { font-size: 8px; color: #b6a4ff; }
+    .grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+    .grid button.lvl { margin: 0; padding: 8px 0; font-size: 8px; }
+    .grid button.lvl.boss { border-color: var(--red); color: #ffb0a0; }
+    button:disabled { opacity: 0.3; cursor: not-allowed; }
+    button:disabled:hover { background: #16201a; color: #d8dde3; }
+    @media (max-width: 560px) { .grid { grid-template-columns: repeat(5, 1fr); } }
     .hint { font-size: 7px; color: #6b7178; margin-top: 18px; }
     .sens { display: block; font-size: 8px; margin-top: 16px; color: #9aa3ad; }
     .sens input { vertical-align: middle; margin-left: 8px; }
@@ -65,6 +74,7 @@
   <canvas id="view" width="960" height="540"></canvas>
   <div id="overlay"><div id="panel"><h2>CHARGEMENT DU DATACENTER...</h2></div></div>
   <noscript>Ce jeu nécessite JavaScript.</noscript>
+  <script src="js/levelgen.js"></script>
   <script src="js/levels.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/textures.js"></script>

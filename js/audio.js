@@ -114,6 +114,17 @@ const Sfx = (() => {
     },
     melee(d) { const v = att(d); noise(0.15, 2000, 400, 0.4 * v); },
     explode(d) { const v = att(d); noise(0.5, 1800, 60, 0.6 * v); },
+    nutgun() { tone('square', 1800, 900, 0.05, 0.18); noise(0.12, 4000, 1500, 0.4, 'highpass'); tone('triangle', 2600, 2400, 0.08, 0.1, 0.03); },
+    rivet() { tone('square', 1500, 900, 0.04, 0.12); noise(0.07, 5000, 1800, 0.3, 'highpass'); },
+    rocket() { noise(0.6, 900, 200, 0.6); tone('sawtooth', 120, 60, 0.4, 0.25); },
+    throw() { noise(0.15, 600, 300, 0.25, 'bandpass', 2); },
+    bounce(d) { const v = att(d); tone('square', 300, 200, 0.05, 0.15 * v); noise(0.05, 2000, 800, 0.15 * v); },
+    bigBoom(d) { const v = Math.max(0.35, att(d)); noise(1.4, 1200, 30, 1.0 * v); tone('sawtooth', 90, 25, 1.0, 0.45 * v); tone('sine', 55, 30, 1.2, 0.5 * v); },
+    shrink() { tone('sine', 1600, 200, 0.4, 0.25); tone('square', 800, 100, 0.35, 0.08); },
+    squish() { noise(0.2, 900, 200, 0.4); tone('sine', 200, 60, 0.2, 0.3); },
+    secret() { [392, 523, 659, 784, 1046].forEach((f, i) => tone('triangle', f, f, 0.2, 0.2, i * 0.07)); },
+    nutanix() { [523, 784, 1046, 1568].forEach((f, i) => tone('square', f, f, 0.12, 0.16, i * 0.08)); tone('sine', 2093, 2093, 0.5, 0.15, 0.32); },
+    slurp() { noise(0.4, 600, 1200, 0.25, 'bandpass', 4); tone('sine', 300, 500, 0.3, 0.1); },
     exit() { [523, 659, 784, 1046].forEach((f, i) => tone('square', f, f, 0.18, 0.2, i * 0.12)); },
   };
 })();

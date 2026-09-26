@@ -43,15 +43,17 @@ function noiseFill(g, R, x, y, w, h, r, gg, b, amp) {
 
 /* ------------------------------------------------------------------ murs */
 
-function drawConcrete(g, R) {
+const EP_STRIPES = [['#1f4f7a', '#2e6da6'], ['#1f6a7a', '#3aa6c0'], ['#7a5a1f', '#c0902e'], ['#4a3a6a', '#7a62a6'], ['#7a1f2a', '#c0303e']];
+function concrete(ep) { return (g, R) => drawConcrete(g, R, ep); }
+function drawConcrete(g, R, ep = 0) {
   noiseFill(g, R, 0, 0, 64, 64, 92, 95, 100, 16);
   g.fillStyle = 'rgba(0,0,0,0.35)';
   g.fillRect(0, 0, 64, 1); g.fillRect(0, 0, 1, 64); g.fillRect(32, 0, 1, 40);
   g.fillStyle = 'rgba(255,255,255,0.08)';
   g.fillRect(1, 1, 63, 1); g.fillRect(33, 1, 1, 39);
   // bandeau bleu peint (signalétique datacenter)
-  g.fillStyle = '#1f4f7a'; g.fillRect(0, 40, 64, 6);
-  g.fillStyle = '#2e6da6'; g.fillRect(0, 40, 64, 1);
+  g.fillStyle = EP_STRIPES[ep][0]; g.fillRect(0, 40, 64, 6);
+  g.fillStyle = EP_STRIPES[ep][1]; g.fillRect(0, 40, 64, 1);
   // plinthe
   g.fillStyle = '#3a3d42'; g.fillRect(0, 58, 64, 6);
   // taches
@@ -304,29 +306,83 @@ function drawBot(g, phase, atk) {
   g.fillStyle = '#2b2f35'; g.fillRect(28, 21, 8, 4);
 }
 
-// Boss : le RANSOMWARE, crâne géant avec cadenas
-function drawBoss(g, phase, atk) {
-  const s = 1;
-  const lo = phase ? 4 : -4;
-  g.fillStyle = '#2a0d0d'; g.fillRect(14, 46, 12, 18 + Math.min(0, lo)); g.fillRect(38, 46, 12, 18 - Math.max(0, lo));
-  g.fillStyle = '#5a1414'; g.fillRect(10, 26, 44, 24);
-  g.fillStyle = '#7a1c1c'; g.fillRect(10, 26, 44, 3);
-  // cadenas
-  g.strokeStyle = '#e8c21a'; g.lineWidth = 3; g.beginPath(); g.arc(32, 35, 5, Math.PI, 0); g.stroke();
-  g.fillStyle = '#e8c21a'; g.fillRect(25, 35, 14, 11);
-  g.fillStyle = '#000'; g.fillRect(31, 38, 2, 5);
-  // bras-canons
-  g.fillStyle = '#3a0f0f'; g.fillRect(0, 28, 10, 20); g.fillRect(54, 28, 10, 20);
-  g.fillStyle = '#111'; g.fillRect(1, 46, 8, 6); g.fillRect(55, 46, 8, 6);
-  if (atk) { ell(g, 5, 55, 5, 5, '#c04dff'); ell(g, 59, 55, 5, 5, '#c04dff'); ell(g, 5, 55, 2, 2, '#fff'); ell(g, 59, 55, 2, 2, '#fff'); }
-  // crâne
-  ell(g, 32, 14, 16, 14, '#e8e0d0');
-  g.fillStyle = '#e8e0d0'; g.fillRect(22, 18, 20, 10);
-  ell(g, 25, 13, 5, 5, '#000'); ell(g, 39, 13, 5, 5, '#000');
-  ell(g, 25, 13, 2, 2, atk ? '#fff' : '#ff2020'); ell(g, 39, 13, 2, 2, atk ? '#fff' : '#ff2020');
-  g.fillStyle = '#000'; g.beginPath(); g.moveTo(32, 17); g.lineTo(29, 22); g.lineTo(35, 22); g.fill();
-  for (let x = 23; x < 42; x += 3) g.fillRect(x, 24, 1, 4);
-  g.fillStyle = '#0f0'; g.font = 'bold 7px monospace'; g.fillText('$', 1, 8 + phase * 2); g.fillText('₿', 56, 10 - phase * 2);
+// Boss : cinq variantes (une par épisode), même carcasse, couleurs et emblème différents
+const BOSS_PAL = {
+  botnet:     { body: '#1f4a24', light: '#2f6a34', dark: '#0f2612', head: '#9fdc8f', eye: '#3dff6a', shot: '#3dff6a', glyph: ['@', '#'] },
+  miner:      { body: '#6a4a0f', light: '#8a661a', dark: '#3a2806', head: '#f2d27a', eye: '#ffb000', shot: '#ffb000', glyph: ['₿', 'Ξ'] },
+  rootkit:    { body: '#241a3a', light: '#3a2a5a', dark: '#120c1e', head: '#b8a8e0', eye: '#c04dff', shot: '#c04dff', glyph: ['#', '$'] },
+  zeroday:    { body: '#0f4a5a', light: '#1a6a7a', dark: '#06262e', head: '#bff4ff', eye: '#00e5ff', shot: '#00e5ff', glyph: ['0', '!'] },
+  ransomware: { body: '#5a1414', light: '#7a1c1c', dark: '#2a0d0d', head: '#e8e0d0', eye: '#ff2020', shot: '#c04dff', glyph: ['$', '₿'] },
+};
+function drawBoss(pal) {
+  return (g, phase, atk) => {
+    const lo = phase ? 4 : -4;
+    g.fillStyle = pal.dark; g.fillRect(14, 46, 12, 18 + Math.min(0, lo)); g.fillRect(38, 46, 12, 18 - Math.max(0, lo));
+    g.fillStyle = pal.body; g.fillRect(10, 26, 44, 24);
+    g.fillStyle = pal.light; g.fillRect(10, 26, 44, 3);
+    // cadenas
+    g.strokeStyle = '#e8c21a'; g.lineWidth = 3; g.beginPath(); g.arc(32, 35, 5, Math.PI, 0); g.stroke();
+    g.fillStyle = '#e8c21a'; g.fillRect(25, 35, 14, 11);
+    g.fillStyle = '#000'; g.fillRect(31, 38, 2, 5);
+    // bras-canons
+    g.fillStyle = pal.dark; g.fillRect(0, 28, 10, 20); g.fillRect(54, 28, 10, 20);
+    g.fillStyle = '#111'; g.fillRect(1, 46, 8, 6); g.fillRect(55, 46, 8, 6);
+    if (atk) { ell(g, 5, 55, 5, 5, pal.shot); ell(g, 59, 55, 5, 5, pal.shot); ell(g, 5, 55, 2, 2, '#fff'); ell(g, 59, 55, 2, 2, '#fff'); }
+    // crâne
+    ell(g, 32, 14, 16, 14, pal.head);
+    g.fillStyle = pal.head; g.fillRect(22, 18, 20, 10);
+    ell(g, 25, 13, 5, 5, '#000'); ell(g, 39, 13, 5, 5, '#000');
+    ell(g, 25, 13, 2, 2, atk ? '#fff' : pal.eye); ell(g, 39, 13, 2, 2, atk ? '#fff' : pal.eye);
+    g.fillStyle = '#000'; g.beginPath(); g.moveTo(32, 17); g.lineTo(29, 22); g.lineTo(35, 22); g.fill();
+    for (let x = 23; x < 42; x += 3) g.fillRect(x, 24, 1, 4);
+    g.fillStyle = pal.eye; g.font = 'bold 7px monospace'; g.fillText(pal.glyph[0], 1, 8 + phase * 2); g.fillText(pal.glyph[1], 56, 10 - phase * 2);
+  };
+}
+
+// Troll de forum : grosse brute verte avec une pancarte "FIRST!"
+function drawTroll(g, phase, atk) {
+  const lo = phase ? 3 : -3;
+  g.fillStyle = '#3d5a2a'; g.fillRect(18, 46, 10, 18 + Math.min(0, lo)); g.fillRect(36, 46, 10, 18 - Math.max(0, lo));
+  ell(g, 32, 38, 20, 16, '#5f8a3a');
+  ell(g, 32, 42, 12, 9, '#7aa84c');
+  g.fillStyle = '#5a3a1a'; g.fillRect(12, 48, 40, 6);
+  // bras + massue (clavier ergonomique cassé)
+  ell(g, 11, 36, 6, 9, '#5f8a3a'); ell(g, 53, 36, 6, 9, '#5f8a3a');
+  const cx = atk ? 60 : 56, cy = atk ? 8 : 16;
+  g.save(); g.translate(cx, cy); g.rotate(atk ? 0.9 : 0.2);
+  g.fillStyle = '#2c3038'; g.fillRect(-4, -2, 8, 30);
+  g.fillStyle = '#d9dde2'; for (let y = 0; y < 26; y += 4) g.fillRect(-3, y, 6, 2);
+  g.restore();
+  // pancarte
+  g.fillStyle = '#6b4a2a'; g.fillRect(6, 10, 2, 28);
+  g.fillStyle = '#f2f2e0'; g.fillRect(0, 6, 20, 11);
+  g.fillStyle = '#c21d1d'; g.font = 'bold 6px monospace'; g.fillText('FIRST!', 1, 14);
+  // tête
+  ell(g, 32, 18, 12, 11, '#6f9a44');
+  ell(g, 26, 16, 3, 3, '#fff'); ell(g, 38, 16, 3, 3, '#fff');
+  g.fillStyle = '#c00'; g.fillRect(26, 16, 2, 2); g.fillRect(38, 16, 2, 2);
+  g.fillStyle = '#2a3a1a'; g.fillRect(24, 11, 6, 2); g.fillRect(35, 11, 6, 2);
+  g.fillStyle = '#2a1a0a'; g.fillRect(27, 23, 11, atk ? 5 : 2);
+  g.fillStyle = '#f2f2e0'; g.fillRect(28, 23, 2, 3); g.fillRect(35, 23, 2, 3);
+  ell(g, 20, 12, 3, 5, '#6f9a44'); ell(g, 44, 12, 3, 5, '#6f9a44');
+}
+
+// Spammeur : enveloppe ambulante qui crache des @
+function drawSpammer(g, phase, atk) {
+  const lo = phase ? 3 : -3;
+  g.fillStyle = '#222'; g.fillRect(22, 48, 5, 16 + Math.min(0, lo)); g.fillRect(37, 48, 5, 16 - Math.max(0, lo));
+  g.fillStyle = '#f2efe0'; g.fillRect(10, 18, 44, 32);
+  g.strokeStyle = '#b8b0a0'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(10, 18); g.lineTo(32, 38); g.lineTo(54, 18); g.stroke();
+  g.fillStyle = '#c21d1d'; g.fillRect(40, 21, 10, 8);
+  g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('$', 43, 28);
+  // yeux + bouche
+  ell(g, 24, 30, 4, 4, '#fff'); ell(g, 40, 34, 4, 4, '#fff');
+  ell(g, 24, 30, 2, 2, '#000'); ell(g, 40, 34, 2, 2, '#000');
+  ell(g, 32, 44, 7, atk ? 5 : 2, '#600');
+  g.fillStyle = atk ? '#ffe14a' : '#e8741a'; g.font = 'bold 10px monospace';
+  g.fillText('@', 2, 14 + phase * 2); g.fillText('@', 52, 12 - phase * 2);
+  g.fillStyle = '#e8c21a'; g.font = 'bold 5px monospace'; g.fillText('SPAM', 14, 26);
 }
 
 // Frame de mort générique : l'image "glitche" en tranches, puis tas de débris.
@@ -365,6 +421,97 @@ function buildEnemySprites(drawFn, debrisCols, seed) {
   };
 }
 
+// Écrou cagé : écrou carré M6 dans sa cage à ressort (ailettes)
+function drawCageNut(g, x, y, s, rot) {
+  g.save(); g.translate(x, y); g.rotate(rot); g.scale(s, s);
+  g.fillStyle = '#8f969e'; g.fillRect(-9, -7, 18, 14);             // cage
+  g.fillStyle = '#6a7078'; g.fillRect(-13, -4, 4, 8); g.fillRect(9, -4, 4, 8); // ailettes
+  g.fillStyle = '#c9ced4'; g.fillRect(-6, -6, 12, 12);              // écrou
+  g.fillStyle = '#e8ecf0'; g.fillRect(-6, -6, 12, 2);
+  ell(g, 0, 0, 3.5, 3.5, '#2a2e34');                                // taraudage
+  g.restore();
+}
+
+// Disque dur 3,5"
+function drawHdd(g, x, y, s, rot) {
+  g.save(); g.translate(x, y); g.rotate(rot); g.scale(s, s);
+  g.fillStyle = '#9aa1a8'; g.fillRect(-10, -7, 20, 14);
+  g.fillStyle = '#c9ced4'; g.fillRect(-10, -7, 20, 2);
+  ell(g, -2, 0, 5, 5, '#b4bac1'); ell(g, -2, 0, 1.5, 1.5, '#5a6068');
+  g.fillStyle = '#1a4a1a'; g.fillRect(-10, 5, 20, 2);
+  g.fillStyle = '#fff'; g.fillRect(4, -5, 5, 8);
+  g.fillStyle = '#c21d1d'; g.fillRect(4, -5, 5, 2);
+  g.restore();
+}
+
+/* --------------------------------------------- racks spéciaux (hyperviseurs) */
+
+function specialRack(brand) {
+  return (g, R, led, L) => {
+    drawRack('R')(g, R, led, L);
+    const b = BRANDS[brand];
+    // bandeau de marque éclairé
+    led(4, 3, 56, 24, b.bg);
+    b.logo(g);
+    g.fillStyle = b.bg; g.fillRect(0, 60, 64, 4);
+    // LEDs aux couleurs de la marque sur les serveurs
+    for (let y = 31; y < 58; y += 6) led(46 + ((y / 6) % 2) * 4, y, 2, 1, L() < 0.7 ? b.led : '#1a1a1a');
+  };
+}
+
+// Écrit un texte en réduisant la police jusqu'à ce qu'il tienne dans maxW ; renvoie sa largeur.
+function fitText(g, text, x, y, maxW, size, weight = 'bold') {
+  let sz = size;
+  do { g.font = `${weight} ${sz}px sans-serif`; sz -= 0.5; } while (g.measureText(text).width > maxW && sz > 3);
+  g.fillText(text, x, y);
+  return g.measureText(text).width;
+}
+
+const BRANDS = {
+  // Broadcom (VMware ESXi) : rouge Broadcom, pastille ronde à l'onde blanche
+  esxi: { name: 'BROADCOM ESXi', bg: '#1c1c1c', led: '#cc092f', logo(g) {
+    ell(g, 14, 13, 8, 8, '#cc092f');
+    g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath();
+    g.moveTo(8, 15); g.lineTo(11, 15); g.lineTo(13, 8); g.lineTo(15, 17); g.lineTo(17, 11); g.lineTo(18, 15); g.lineTo(21, 15); g.stroke();
+    g.fillStyle = '#fff'; fitText(g, 'BROADCOM', 24, 12, 34, 7);
+    g.fillStyle = '#cc092f'; fitText(g, 'ESXi', 30, 23, 24, 9);
+  } },
+  // Proxmox : le "X" orange et noir, fond clair
+  proxmox: { name: 'PROXMOX VE', bg: '#f2f2f2', led: '#e57000', logo(g) {
+    g.lineWidth = 3.5;
+    g.strokeStyle = '#e57000'; g.beginPath(); g.moveTo(7, 6); g.lineTo(19, 20); g.stroke();
+    g.strokeStyle = '#000'; g.beginPath(); g.moveTo(19, 6); g.lineTo(7, 20); g.stroke();
+    g.strokeStyle = '#e57000'; g.lineWidth = 3.5; g.beginPath(); g.moveTo(7, 6); g.lineTo(12, 12); g.stroke();
+    g.fillStyle = '#000'; const pw = fitText(g, 'PROXMO', 22, 13, 30, 8);
+    g.fillStyle = '#e57000'; g.fillText('X', 22 + pw, 13);
+    g.fillStyle = '#555'; fitText(g, 'Virtual Env.', 23, 22, 34, 5, 'normal');
+  } },
+  // Vates (XCP-ng / Xen Orchestra)
+  vates: { name: 'VATES XCP-ng', bg: '#0f1d3d', led: '#2f9bff', logo(g) {
+    g.fillStyle = '#2f9bff'; g.beginPath(); g.moveTo(6, 6); g.lineTo(11, 6); g.lineTo(14, 16); g.lineTo(17, 6); g.lineTo(22, 6); g.lineTo(16, 21); g.lineTo(12, 21); g.closePath(); g.fill();
+    g.fillStyle = '#fff'; fitText(g, 'VATES', 25, 13, 32, 9);
+    g.fillStyle = '#2f9bff'; fitText(g, 'XCP-ng', 26, 22, 32, 7);
+  } },
+  // Hyper-V : les quatre carrés Microsoft
+  hyperv: { name: 'MICROSOFT HYPER-V', bg: '#1b1b1b', led: '#00a4ef', logo(g) {
+    g.fillStyle = '#f25022'; g.fillRect(6, 6, 7, 7);
+    g.fillStyle = '#7fba00'; g.fillRect(14, 6, 7, 7);
+    g.fillStyle = '#00a4ef'; g.fillRect(6, 14, 7, 7);
+    g.fillStyle = '#ffb900'; g.fillRect(14, 14, 7, 7);
+    g.fillStyle = '#fff'; fitText(g, 'Hyper-V', 24, 17, 34, 9);
+  } },
+  // Nutanix : fond anthracite, logotype blanc, "X" violet Iris
+  nutanix: { name: 'NUTANIX', bg: '#131313', led: '#7855fa', logo(g) {
+    g.fillStyle = '#fff'; const nw = fitText(g, 'NUTANI', 5, 16, 42, 11);
+    const x0 = 6 + nw;
+    g.lineWidth = 2.5;
+    g.strokeStyle = '#7855fa'; g.beginPath(); g.moveTo(x0, 8); g.lineTo(x0 + 8, 16); g.stroke();
+    g.strokeStyle = '#b6a4ff'; g.beginPath(); g.moveTo(x0 + 8, 8); g.lineTo(x0, 16); g.stroke();
+    g.fillStyle = '#7855fa'; g.fillRect(5, 20, 50, 3);
+  } },
+};
+const SPECIAL_TILES = { '3': 'esxi', '4': 'proxmox', '5': 'vates', '6': 'hyperv', '7': 'nutanix' };
+
 /* objets */
 function drawItem(type) {
   return (g) => {
@@ -388,11 +535,11 @@ function drawItem(type) {
         for (let y = 38; y < 58; y += 5) for (let x = 20 + ((y / 5) % 2) * 4; x < 44; x += 8) g.fillRect(x, y, 6, 3);
         g.fillStyle = '#ffdf40'; g.beginPath(); g.moveTo(32, 36); g.lineTo(37, 46); g.lineTo(32, 43); g.lineTo(27, 46); g.fill();
         break;
-      case 'a': // paquets
-        g.fillStyle = '#1f4f7a'; g.fillRect(20, 50, 24, 14);
-        g.fillStyle = '#2e6da6'; g.fillRect(20, 50, 24, 3);
-        g.fillStyle = '#e8c21a'; for (let x = 23; x < 42; x += 4) g.fillRect(x, 45, 2, 6);
-        g.fillStyle = '#fff'; g.font = '5px monospace'; g.fillText('PKT', 25, 61);
+      case 'a': // boîte d'écrous cagés
+        g.fillStyle = '#6b4a2a'; g.fillRect(16, 50, 32, 14);
+        g.fillStyle = '#8a6438'; g.fillRect(16, 50, 32, 3);
+        for (let i = 0; i < 4; i++) drawCageNut(g, 21 + i * 7, 47, 0.45, i * 0.4);
+        g.fillStyle = '#fff'; g.font = '5px monospace'; g.fillText('M6 x50', 19, 61);
         break;
       case 's': // trames jumbo
         g.fillStyle = '#7a1a1a'; g.fillRect(18, 48, 28, 16);
@@ -439,6 +586,54 @@ function drawItem(type) {
         g.fillStyle = '#222'; g.font = 'bold 6px monospace'; g.fillText('FRAGILE', 12, 33); g.fillText('1U x4', 36, 50);
         g.strokeStyle = '#222'; g.beginPath(); g.moveTo(14, 44); g.lineTo(14, 52); g.moveTo(12, 46); g.lineTo(14, 44); g.lineTo(16, 46); g.stroke();
         break;
+      case 'j': // boisson énergisante
+        g.fillStyle = '#1a1a1a'; g.fillRect(26, 38, 12, 26);
+        g.fillStyle = '#3dff6a'; g.fillRect(26, 44, 12, 12);
+        g.fillStyle = '#111'; g.font = 'bold 7px monospace'; g.fillText('24', 27, 53);
+        g.fillStyle = '#aaa'; g.fillRect(27, 36, 10, 2);
+        break;
+      case 'k': // modules SFP (roquettes)
+        g.fillStyle = '#2a2e34'; g.fillRect(16, 48, 32, 16);
+        g.fillStyle = '#454b53'; g.fillRect(16, 48, 32, 3);
+        for (let x = 19; x < 46; x += 7) { g.fillStyle = '#c9cdd1'; g.fillRect(x, 38, 5, 12); g.fillStyle = '#1f58d6'; g.fillRect(x, 36, 5, 3); }
+        g.fillStyle = '#e8c21a'; g.font = '5px monospace'; g.fillText('SFP+', 24, 60);
+        break;
+      case 'g': // disque dur
+        drawHdd(g, 32, 50, 1.3, 0);
+        break;
+      case 'K': // bazooka SFP
+        g.fillStyle = '#3a4a2a'; g.fillRect(6, 48, 52, 9);
+        g.fillStyle = '#4c6038'; g.fillRect(6, 48, 52, 2);
+        g.fillStyle = '#222'; g.fillRect(24, 57, 6, 6); g.fillRect(36, 57, 4, 5);
+        g.fillStyle = '#c9cdd1'; g.fillRect(56, 49, 6, 7); g.fillStyle = '#1f58d6'; g.fillRect(58, 47, 3, 2);
+        break;
+      case 'G': // pile de disques durs
+        drawHdd(g, 32, 60, 1.4, 0); drawHdd(g, 30, 52, 1.4, 0); drawHdd(g, 33, 44, 1.4, 0);
+        break;
+      case 'Y': // compresseur ZIP
+        g.fillStyle = '#6a4ae0'; g.fillRect(10, 44, 44, 14);
+        g.fillStyle = '#8a6aff'; g.fillRect(10, 44, 44, 3);
+        g.fillStyle = '#e8c21a'; g.fillRect(22, 44, 6, 14);
+        for (let y = 46; y < 58; y += 3) { g.fillStyle = '#555'; g.fillRect(23, y, 4, 1); }
+        g.fillStyle = '#3dff6a'; g.fillRect(52, 48, 8, 6);
+        g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('ZIP', 33, 54);
+        break;
+      case 'B': // batterie d'onduleur
+        g.fillStyle = '#1a1c20'; g.fillRect(14, 22, 36, 42);
+        g.fillStyle = '#2c3038'; g.fillRect(14, 22, 36, 4);
+        g.fillStyle = '#f2c230'; g.fillRect(14, 36, 36, 12);
+        g.fillStyle = '#111'; g.font = 'bold 6px monospace'; g.fillText('UPS 48V', 17, 44);
+        g.fillStyle = '#c21d1d'; g.fillRect(18, 18, 6, 4); g.fillStyle = '#222'; g.fillRect(40, 18, 6, 4);
+        g.fillStyle = '#3dff6a'; g.fillRect(18, 54, 4, 2); g.fillRect(24, 54, 4, 2); g.fillRect(30, 54, 4, 2);
+        break;
+      case 'f': // fontaine à eau
+        g.fillStyle = '#d8dde3'; g.fillRect(22, 36, 20, 28);
+        g.fillStyle = '#aab'; g.fillRect(22, 36, 20, 2);
+        g.fillStyle = 'rgba(80,160,255,0.95)'; g.beginPath(); g.ellipse(32, 24, 11, 13, 0, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#bfe0ff'; g.fillRect(26, 16, 3, 10);
+        g.fillStyle = '#1f58d6'; g.fillRect(28, 34, 8, 3);
+        g.fillStyle = '#c21d1d'; g.fillRect(26, 44, 3, 3); g.fillStyle = '#1f58d6'; g.fillRect(35, 44, 3, 3);
+        break;
       case 'e': // extincteur
         g.fillStyle = '#b01515'; g.fillRect(28, 38, 9, 26);
         g.fillStyle = '#d82a2a'; g.fillRect(28, 38, 3, 26);
@@ -483,7 +678,7 @@ function buildAssets() {
     return out;
   };
   Assets.walls = {
-    '#': variants(drawConcrete, 2, 1),
+    '#': variants(concrete(0), 2, 1),
     'W': variants(drawWarning, 1, 1),
     'R': variants(drawRack('R'), 3, 2),
     'S': variants(drawRack('S'), 2, 2),
@@ -494,6 +689,9 @@ function buildAssets() {
     '2': variants(drawDoor('blue'), 1, 2),
     'X': variants(drawExit, 1, 2),
   };
+  for (const [ch, brand] of Object.entries(SPECIAL_TILES)) Assets.walls[ch] = variants(specialRack(brand), 1, 2);
+  // béton (et faux murs secrets) aux couleurs de chaque épisode
+  Assets.concrete = [0, 1, 2, 3, 4].map((ep) => variants(concrete(ep), 2, 1));
   Assets.floor = [makeTexture(drawFloor(false), 5), makeTexture(drawFloor(true), 6)];
   Assets.ceil = [makeTexture(drawCeiling(false), 7), makeTexture(drawCeiling(true), 8)];
 
@@ -501,18 +699,34 @@ function buildAssets() {
     bug: buildEnemySprites(drawBug, ['#2c9a37', '#1b4d21', '#3fc24c', '#ff00ff'], 3),
     drone: buildEnemySprites(drawDrone, ['#8d2468', '#d93a8f', '#7a1f5c', '#f2f2f2'], 4),
     bot: buildEnemySprites(drawBot, ['#50565e', '#3c4148', '#1a5fd0', '#2b2f35'], 5),
-    boss: buildEnemySprites(drawBoss, ['#5a1414', '#e8e0d0', '#e8c21a', '#3a0f0f'], 6),
+    troll: buildEnemySprites(drawTroll, ['#5f8a3a', '#3d5a2a', '#2c3038', '#f2f2e0'], 7),
+    spam: buildEnemySprites(drawSpammer, ['#f2efe0', '#b8b0a0', '#c21d1d', '#222'], 8),
   };
+  let bs = 10;
+  for (const [k, pal] of Object.entries(BOSS_PAL)) Assets.enemies[k] = buildEnemySprites(drawBoss(pal), [pal.body, pal.head, '#e8c21a', pal.dark], bs++);
   Assets.items = {};
-  for (const k of '+HAascruFMLxe') Assets.items[k] = makeSprite(drawItem(k));
+  for (const k of '+HAascruFMLxejkgKGYBf') Assets.items[k] = makeSprite(drawItem(k));
   Assets.proj = {
     orb: orbSprite('#ff3bd0', '#7a1f5c', 7),
     bolt: orbSprite('#ffe14a', '#ff5a1a', 5),
     boss: orbSprite('#c04dff', '#4a0f7a', 10),
     plasma: orbSprite('#9ef', '#1a7de1', 7),
+    zip: orbSprite('#d6c8ff', '#6a4ae0', 6),
+    miner: orbSprite('#ffe14a', '#a86a00', 10),
+    botnet: orbSprite('#b6ffbf', '#1f6a24', 10),
+    zeroday: orbSprite('#e0ffff', '#008aa8', 10),
+    nut: [0, 1, 2, 3].map((i) => makeSprite((g) => drawCageNut(g, 32, 32, 1.3, i * Math.PI / 8))),
+    hdd: [0, 1, 2, 3].map((i) => makeSprite((g) => drawHdd(g, 32, 32, 1.6, i * Math.PI / 2))),
+    sfp: [0, 1].map((i) => makeSprite((g) => {
+      ell(g, 32, 32, 10 + i * 2, 8 + i * 2, '#ff7a1a'); ell(g, 32, 32, 6, 5, '#ffe14a');
+      g.fillStyle = '#c9cdd1'; g.fillRect(24, 26, 16, 12); g.fillStyle = '#1f58d6'; g.fillRect(24, 26, 16, 3);
+    })),
   };
   Assets.fx = {
     spark: [sparkSprite(['#ffe14a', '#fff', '#ff9a1a'], 14, 1), sparkSprite(['#ff9a1a', '#555'], 8, 2)],
+    bigBoom: [sparkSprite(['#fff', '#ffe14a', '#ff9a1a', '#ff5a1a'], 90, 7), sparkSprite(['#ff5a1a', '#ff9a1a', '#555', '#333'], 70, 8), sparkSprite(['#444', '#666', '#ff5a1a'], 40, 9)],
+    smoke: [sparkSprite(['#777', '#999', '#555'], 18, 12), sparkSprite(['#555', '#444'], 10, 13)],
+    nutanix: [sparkSprite(['#fff', '#7855fa', '#b6a4ff'], 40, 10), sparkSprite(['#7855fa', '#b6a4ff'], 24, 11)],
     boom: [sparkSprite(['#fff', '#ffe14a', '#ff5a1a'], 40, 3), sparkSprite(['#ff5a1a', '#c04dff', '#444'], 30, 4)],
     plasmaHit: [sparkSprite(['#fff', '#9ef', '#3cf'], 26, 5), sparkSprite(['#3cf', '#1a7de1'], 14, 6)],
   };

@@ -1,34 +1,96 @@
 'use strict';
 /*
- * DOOOOOM — moteur de raycasting façon Wolfenstein/Doom.
+ * DOOOOOM — moteur de raycasting, esprit Duke Nukem, dans les datacenters.
  * Rendu logiciel dans un buffer 480x230 (vue 3D) + HUD en haute résolution.
  */
 
 const W = 480, H = 270, HUD_H = 40, VH = H - HUD_H, HORIZ = VH / 2;
 const PLANE = 0.8, PROJ = (W / 2) / PLANE;
 const FONT = '"Press Start 2P", monospace';
-const WALL_CHARS = '#RSNCWXD12';
+const WALL_CHARS = '#RSNCWXD12?34567';
+const SPECIAL_NAMES = { '3': 'Broadcom ESXi', '4': 'Proxmox', '5': 'Vates XCP-ng', '6': 'Hyper-V' };
 
 /* ------------------------------------------------------------ définitions */
 
 const WEAPONS = [
   { name: 'CLAVIER MÉCA', ammo: null, rate: 0.5, anim: 0.45, dmg: [20, 34], melee: true, range: 1.5 },
-  { name: 'PISTOLET PING', ammo: 'bullets', rate: 0.36, anim: 0.3, dmg: [10, 16], pellets: 1, spread: 0.012 },
-  { name: 'FUSIL À PAQUETS', ammo: 'shells', rate: 0.9, anim: 0.8, dmg: [7, 12], pellets: 8, spread: 0.085 },
-  { name: 'MITRAILLEUSE GIGABIT', ammo: 'bullets', rate: 0.095, anim: 0.09, dmg: [9, 14], pellets: 1, spread: 0.035 },
-  { name: 'CANON OVERCLOCK', ammo: 'cells', rate: 0.11, anim: 0.1, dmg: [18, 26], projectile: true },
+  { name: 'PISTOLET À ÉCROUS CAGÉS', ammo: 'nuts', rate: 0.3, anim: 0.25, dmg: [12, 18], proj: 'nut', speed: 19, spread: 0.01, sfx: 'nutgun' },
+  { name: 'FUSIL À PAQUETS', ammo: 'shells', rate: 0.9, anim: 0.8, dmg: [7, 12], pellets: 8, spread: 0.085, sfx: 'shotgun' },
+  { name: 'RIVETEUSE GATLING', ammo: 'nuts', rate: 0.085, anim: 0.08, dmg: [9, 14], proj: 'nut', speed: 21, spread: 0.04, sfx: 'rivet' },
+  { name: 'BAZOOKA SFP', ammo: 'sfp', rate: 0.85, anim: 0.5, dmg: [110, 110], proj: 'sfp', speed: 13, spread: 0, sfx: 'rocket' },
+  { name: 'DISQUES DURS', ammo: 'hdd', rate: 0.75, anim: 0.5, dmg: [130, 130], proj: 'hdd', speed: 9, spread: 0, sfx: 'throw' },
+  { name: 'COMPRESSEUR ZIP', ammo: 'cells', use: 4, rate: 0.6, anim: 0.3, dmg: [0, 0], proj: 'zip', speed: 16, spread: 0, sfx: 'shrink' },
+  { name: 'CANON OVERCLOCK', ammo: 'cells', rate: 0.11, anim: 0.1, dmg: [18, 26], proj: 'plasma', speed: 15, spread: 0, sfx: 'plasma' },
 ];
-const AMMO_MAX = { bullets: 200, shells: 50, cells: 300 };
+const AMMO_MAX = { nuts: 250, shells: 50, sfp: 30, hdd: 20, cells: 300 };
+const AMMO_LABELS = [['ÉCR', 'nuts'], ['TRM', 'shells'], ['SFP', 'sfp'], ['HDD', 'hdd'], ['NRJ', 'cells']];
+const WEAPON_SLOT = { F: 2, M: 3, K: 4, G: 5, Y: 6, L: 7 };
 
+const BOSS_BASE = { speed: 1.0, radius: 0.7, scale: 1.9, z: 0, atkRange: 18, cd: 1.5, sight: 30, pain: 0.04, shotZ: 0.9, boss: true };
 const ETYPES = {
   bug: { name: 'Bug', hp: 35, speed: 2.2, radius: 0.3, scale: 0.7, z: 0, melee: true, dmg: [5, 11], atkRange: 1.0, cd: 0.9, sight: 16, pain: 0.7 },
-  drone: { name: 'Drone viral', hp: 50, speed: 1.6, radius: 0.3, scale: 0.6, z: 0.35, dmg: [8, 14], atkRange: 11, cd: 1.9, sight: 18, pain: 0.5, shotZ: 0.62 },
-  bot: { name: 'Bot BSOD', hp: 85, speed: 1.2, radius: 0.32, scale: 1.0, z: 0, dmg: [5, 9], atkRange: 13, cd: 2.4, sight: 18, pain: 0.35, burst: 3, shotZ: 0.55 },
-  boss: { name: 'RANSOMWARE', hp: 1500, speed: 1.0, radius: 0.7, scale: 1.9, z: 0, dmg: [9, 15], atkRange: 18, cd: 1.5, sight: 30, pain: 0.04, shotZ: 0.9 },
+  drone: { name: 'Drone viral', hp: 50, speed: 1.6, radius: 0.3, scale: 0.6, z: 0.35, dmg: [8, 14], atkRange: 11, cd: 1.9, sight: 18, pain: 0.5, shotZ: 0.62, shot: 'orb' },
+  bot: { name: 'Bot BSOD', hp: 85, speed: 1.2, radius: 0.32, scale: 1.0, z: 0, dmg: [5, 9], atkRange: 13, cd: 2.4, sight: 18, pain: 0.35, burst: 3, shotZ: 0.55, shot: 'bolt' },
+  troll: { name: 'Troll de forum', hp: 170, speed: 1.6, radius: 0.4, scale: 1.15, z: 0, melee: true, dmg: [14, 24], atkRange: 1.2, cd: 1.2, sight: 16, pain: 0.2 },
+  spam: { name: 'Spammeur', hp: 60, speed: 1.3, radius: 0.32, scale: 0.8, z: 0, dmg: [4, 7], atkRange: 10, cd: 2.2, sight: 16, pain: 0.5, shotZ: 0.45, shot: 'bolt', fan: 3 },
+  botnet: { ...BOSS_BASE, name: 'BOTNET', tag: 'ZOMBIFICATION EN COURS', hp: 900, dmg: [7, 12], shot: 'botnet', minion: 'bug' },
+  miner: { ...BOSS_BASE, name: 'CRYPTOMINEUR', tag: 'MINAGE EN COURS', hp: 1100, dmg: [8, 13], shot: 'miner', minion: 'drone' },
+  rootkit: { ...BOSS_BASE, name: 'ROOTKIT', tag: 'ESCALADE DE PRIVILÈGES', hp: 1300, dmg: [9, 14], shot: 'boss', minion: 'spam' },
+  zeroday: { ...BOSS_BASE, name: 'ZERO-DAY', tag: 'EXPLOITATION EN COURS', hp: 1500, speed: 1.2, dmg: [9, 15], shot: 'zeroday', minion: 'bot' },
+  ransomware: { ...BOSS_BASE, name: 'RANSOMWARE', tag: 'CHIFFREMENT EN COURS', hp: 2200, dmg: [10, 16], shot: 'boss', minion: 'bug' },
 };
-const ENEMY_CHARS = { b: 'bug', d: 'drone', o: 'bot', Z: 'boss' };
-const ITEM_CHARS = '+HAascruFML';
-const DECOR_CHARS = 'xe';
+const ENEMY_CHARS = { b: 'bug', d: 'drone', o: 'bot', t: 'troll', m: 'spam' };
+const ITEM_CHARS = '+HAascrukgjFMKGYL';
+const DECOR_CHARS = 'xef';
+
+/* --------------------------------------------------------------- répliques */
+
+const QUIPS = {
+  start: ["L'admin est dans la place. Et il n'a pas eu son café.", 'Qui a encore touché à la prod ?',
+    "Je suis venu rebooter des serveurs et botter des culs. Et j'ai presque fini de rebooter.",
+    'Personne ne ferme mon ticket à ma place.', 'Allez. Fenêtre de maintenance ouverte... sur vos têtes.'],
+  kill: ['Ctrl Alt Suppr, bébé !', 'Retourne dans slash dev slash null.', 'Kernel panic ? Pas chez moi.', 'Bug corrigé. En prod. Comme toujours.',
+    'Ticket clôturé.', 'Garbage collected !', 'Erreur 404 : ennemi introuvable.', "Ça, c'est du hotfix.", "Tu n'étais pas dans le SLA.", 'Segfault, mon gars.'],
+  weapon: ['Viens voir papa.', "Ooh, ça c'est du matos de prod.", 'Enfin un outil digne de moi.', 'Ça va chiffrer... mais pas pour eux.'],
+  secret: ['Une zone secrète ! Personne ne cache rien à l\'admin.', "Tiens, un placard qui n'était pas dans le plan de câblage."],
+  stomp: ['Écrasé comme un vieux ticket Jira.', 'Compressé, écrasé, archivé.', 'Taille du fichier : zéro octet.'],
+  nutanix: ['Encore un cluster migré sur Nutanix.', 'Un coup de clavier, une migration.', 'Hyperconvergé, bébé !', 'Et hop, un de plus dans Prism.'],
+  nutanixAll: ["Datacenter cent pour cent Nutanix. Ça, c'est de l'infra !"],
+  hurt: ["J'ai connu des migrations plus douces.", 'Aïe. Faudra ouvrir un ticket.', 'Je saigne en RAID zéro.'],
+  boss: ['Toi, je vais te désinstaller.', 'Pas de rançon pour toi, mon grand.', 'Enfin un adversaire à ma taille.'],
+  bossKill: ['Ton chiffrement, tu peux te le garder.', 'Et voilà. Restauration terminée.', 'Désinstallé. Sans redémarrage.'],
+  fountain: ["Ahhh. L'eau de la clim, rien de tel.", "Ça hydrate l'ego."],
+  drink: ['Turbo activé !', 'Vingt-quatre heures sans dormir, pas de souci.'],
+  barrel: ['Boum ! Onduleur déchargé.', 'Coupure de courant... pour vous.'],
+  exit: ['Reboot lancé. Au suivant.', 'Le datacenter vous dit merci. De rien.'],
+};
+let voiceOn = true;
+let lastQuip = -99;
+let frenchVoice = null;
+function pickVoice() {
+  if (!window.speechSynthesis) return;
+  const v = speechSynthesis.getVoices().filter((x) => x.lang && x.lang.toLowerCase().startsWith('fr'));
+  frenchVoice = v.find((x) => /thomas|paul|henri|male|homme/i.test(x.name)) || v[0] || null;
+}
+if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+
+function quip(kind, chance = 1, force = false) {
+  if (!L || Math.random() > chance) return;
+  if (!force && L.time - lastQuip < 4) return;
+  const list = QUIPS[kind];
+  const text = list[Math.floor(Math.random() * list.length)];
+  lastQuip = L.time;
+  L.subtitle = { text, t: 3.2 };
+  if (voiceOn && window.speechSynthesis && window.SpeechSynthesisUtterance) {
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'fr-FR'; u.pitch = 0.35; u.rate = 1.05; u.volume = 0.9;
+      if (frenchVoice) u.voice = frenchVoice;
+      speechSynthesis.speak(u);
+    } catch (e) { /* synthèse vocale indisponible */ }
+  }
+}
 
 /* ---------------------------------------------------------------- canvas */
 
@@ -65,24 +127,38 @@ let animFrame = 0, animClock = 0;
 const P = { x: 0, y: 0, a: 0 };
 
 function newInventory() {
-  return { hp: 100, armor: 0, ammo: { bullets: 50, shells: 0, cells: 0 }, weapons: [true, true, false, false, false], cur: 1 };
+  return { hp: 100, armor: 0, ammo: { nuts: 60, shells: 0, sfp: 0, hdd: 0, cells: 0 }, weapons: [true, true, false, false, false, false, false, false], cur: 1 };
+}
+// Équipement de départ quand on commence directement à un niveau avancé.
+function defaultLoadout(idx) {
+  const inv = newInventory();
+  for (const [ch, first] of Object.entries(WEAPON_FIRST_LEVEL)) if (first < idx) inv.weapons[WEAPON_SLOT[ch]] = true;
+  const w = inv.weapons;
+  inv.ammo = { nuts: 100, shells: w[2] ? 20 : 0, sfp: w[4] ? 5 : 0, hdd: w[5] ? 4 : 0, cells: w[6] || w[7] ? 80 : 0 };
+  inv.armor = idx >= 10 ? 50 : 0;
+  inv.cur = w[3] ? 3 : w[2] ? 2 : 1;
+  return inv;
 }
 const cloneInv = (i) => JSON.parse(JSON.stringify(i));
 const rand = (a, b) => a + Math.random() * (b - a);
 const randi = (a, b) => Math.floor(rand(a, b + 1));
+const alive = (e) => e.state !== 'dead' && e.state !== 'dying';
+// famille de sons d'un ennemi
+const sndKind = (e) => (ETYPES[e.type].boss ? 'boss' : e.type === 'troll' ? 'bug' : e.type === 'spam' ? 'bot' : e.type);
 
 function loadLevel(idx) {
-  const def = LEVELS[idx];
+  const def = getLevel(idx);
   const rows = def.map, w = rows[0].length, h = rows.length;
   L = {
     idx, def, w, h,
     map: new Uint8Array(w * h), block: new Uint8Array(w * h),
     floor: new Uint8Array(w * h), ceil: new Uint8Array(w * h), variant: new Uint8Array(w * h),
     doors: new Array(w * h).fill(null), doorList: [],
-    enemies: [], items: [], decor: [], proj: [], fx: [],
+    enemies: [], items: [], decor: [], barrels: [], proj: [], fx: [],
     flow: new Int16Array(w * h), flowT: 0,
     time: 0, kills: 0, totalKills: 0, itemsGot: 0, totalItems: 0,
-    msgs: [], titleT: 5, keys: { red: false, blue: false }, bossAlive: false,
+    secrets: 0, totalSecrets: 0, migrated: 0, totalSpecials: 0,
+    msgs: [], titleT: 5, subtitle: null, keys: { red: false, blue: false }, bossAlive: false, bossSeen: false,
   };
   let start = null;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -91,43 +167,48 @@ function loadLevel(idx) {
     L.ceil[i] = (x % 3 === 1 && y % 3 === 1) ? 1 : 0;
     if (WALL_CHARS.includes(c)) {
       L.map[i] = c.charCodeAt(0);
-      if (c === 'D' || c === '1' || c === '2') {
-        const d = { x, y, lock: c === '1' ? 'red' : c === '2' ? 'blue' : null, open: 0, st: 'closed', timer: 0 };
+      if ('3456'.includes(c)) L.totalSpecials++;
+      if (c === 'D' || c === '1' || c === '2' || c === '?') {
+        const d = { x, y, lock: c === '1' ? 'red' : c === '2' ? 'blue' : null, secret: c === '?', open: 0, st: 'closed', timer: 0 };
+        if (d.secret) L.totalSecrets++;
         L.doors[i] = d; L.doorList.push(d);
       }
       continue;
     }
     if (c === 'P') start = { x: x + 0.5, y: y + 0.5 };
-    else if (ENEMY_CHARS[c]) { spawnEnemy(ENEMY_CHARS[c], x + 0.5, y + 0.5); }
+    else if (c === 'Z') spawnEnemy(def.bossType || 'ransomware', x + 0.5, y + 0.5);
+    else if (ENEMY_CHARS[c]) spawnEnemy(ENEMY_CHARS[c], x + 0.5, y + 0.5);
     else if (ITEM_CHARS.includes(c)) { L.items.push({ x: x + 0.5, y: y + 0.5, type: c, taken: false }); L.totalItems++; }
-    else if (DECOR_CHARS.includes(c)) { L.decor.push({ x: x + 0.5, y: y + 0.5, type: c }); if (c === 'x') L.block[i] = 1; }
+    else if (c === 'B') { L.barrels.push({ x: x + 0.5, y: y + 0.5, hp: 25, fuse: -1, dead: false }); L.block[i] = 1; }
+    else if (DECOR_CHARS.includes(c)) { L.decor.push({ x: x + 0.5, y: y + 0.5, type: c, uses: 0 }); if (c === 'x') L.block[i] = 1; }
   }
   // dalles perforées devant les baies (allées froides)
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
     if (L.map[y * w + x]) continue;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const c = String.fromCharCode(L.map[(y + dy) * w + x + dx]);
-      if ('RSN'.includes(c) && L.map[(y + dy) * w + x + dx]) L.floor[y * w + x] = 1;
+      const t = L.map[(y + dy) * w + x + dx];
+      if (t && 'RSN34567'.includes(String.fromCharCode(t))) L.floor[y * w + x] = 1;
     }
   }
   P.x = start.x; P.y = start.y;
-  // orientation vers le couloir le plus long
   let best = 0;
   for (let k = 0; k < 4; k++) {
     const a = k * Math.PI / 2;
     castRay(P.x, P.y, Math.cos(a), Math.sin(a));
     if (RH.d > best) { best = RH.d; P.a = a; }
   }
-  Object.assign(P, { bobPhase: 0, bobAmt: 0, wAnim: 0, fireCd: 0, raise: 1, flashT: 0, hurtT: 0, pickT: 0, dead: false, deadT: 0, spin: 0, faceMood: '', faceT: 0, look: 0, lookT: 0, hurtDir: 0 });
+  Object.assign(P, { bobPhase: 0, bobAmt: 0, wAnim: 0, fireCd: 0, raise: 1, flashT: 0, hurtT: 0, pickT: 0, dead: false, deadT: 0, spin: 0,
+    faceMood: '', faceT: 0, look: 0, lookT: 0, hurtDir: 0, shake: 0, boostT: 0, nutT: 0 });
   computeFlow();
 }
 
 function spawnEnemy(type, x, y) {
   const T = ETYPES[type];
-  const e = { type, x, y, hp: T.hp, state: 'idle', timer: 0, cd: 0, animT: Math.random(), painT: 0, flash: 0, sees: false, losT: Math.random() * 0.2, alerted: false, strafe: Math.random() < 0.5 ? 1 : -1, shots: 0, shotT: 0, attacks: 0 };
+  const e = { type, x, y, hp: T.hp, state: 'idle', timer: 0, cd: 0, animT: Math.random(), painT: 0, flash: 0, sees: false, losT: Math.random() * 0.2,
+    alerted: false, strafe: Math.random() < 0.5 ? 1 : -1, shots: 0, shotT: 0, attacks: 0, shrunk: 0 };
   L.enemies.push(e);
   L.totalKills++;
-  if (type === 'boss') L.bossAlive = true;
+  if (T.boss) L.bossAlive = true;
   return e;
 }
 
@@ -146,13 +227,13 @@ function castRay(px, py, rdx, rdy) {
   if (rdx < 0) { sx = -1; sdx = (px - mx) * ddx; } else { sx = 1; sdx = (mx + 1 - px) * ddx; }
   if (rdy < 0) { sy = -1; sdy = (py - my) * ddy; } else { sy = 1; sdy = (my + 1 - py) * ddy; }
   let side = 0;
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 256; i++) {
     if (sdx < sdy) { sdx += ddx; mx += sx; side = 0; } else { sdy += ddy; my += sy; side = 1; }
     if (mx < 0 || my < 0 || mx >= w || my >= h) break;
     const idx = my * w + mx, t = map[idx];
     if (!t) continue;
     const door = L.doors[idx];
-    if (door) {
+    if (door && !door.secret) {
       let d, f;
       if (side === 0) { d = sdx - ddx * 0.5; f = py + d * rdy; if (Math.floor(f) !== my) continue; f -= my; }
       else { d = sdy - ddy * 0.5; f = px + d * rdx; if (Math.floor(f) !== mx) continue; f -= mx; }
@@ -160,7 +241,15 @@ function castRay(px, py, rdx, rdy) {
       RH.d = d; RH.side = side; RH.mx = mx; RH.my = my; RH.wx = f - door.open; RH.tile = t;
       return RH;
     }
-    const d = side === 0 ? sdx - ddx : sdy - ddy;
+    // un passage secret recule dans le mur comme dans Wolfenstein
+    let d = side === 0 ? sdx - ddx : sdy - ddy;
+    if (door && door.secret) {
+      if (door.open >= 1) continue;
+      const pd = side === 0 ? d + ddx * door.open : d + ddy * door.open;
+      const f = side === 0 ? py + pd * rdy : px + pd * rdx;
+      if (Math.floor(f) !== (side === 0 ? my : mx)) continue;
+      d = pd;
+    }
     let wx = side === 0 ? py + d * rdy : px + d * rdx;
     wx -= Math.floor(wx);
     RH.d = d; RH.side = side; RH.mx = mx; RH.my = my; RH.wx = wx; RH.tile = t;
@@ -202,11 +291,10 @@ function moveEntity(o, dx, dy, r, isPlayer) {
 
 function hitsEnemy(x, y, r) {
   for (const e of L.enemies) {
-    if (e.state === 'dead' || e.state === 'dying') continue;
+    if (!alive(e) || e.shrunk > 0) continue;
     const rr = r + ETYPES[e.type].radius;
     const dx = e.x - x, dy = e.y - y;
     if (dx * dx + dy * dy < rr * rr) {
-      // autorise à s'éloigner si déjà en contact
       const cur = (e.x - P.x) ** 2 + (e.y - P.y) ** 2;
       if (dx * dx + dy * dy < cur) return true;
     }
@@ -233,8 +321,9 @@ function doorOccupied(d) {
 
 function updateDoors(dt) {
   for (const d of L.doorList) {
-    if (d.st === 'opening') { d.open += dt * 1.8; if (d.open >= 1) { d.open = 1; d.st = 'open'; d.timer = 4; } }
+    if (d.st === 'opening') { d.open += dt * (d.secret ? 0.8 : 1.8); if (d.open >= 1) { d.open = 1; d.st = 'open'; d.timer = 4; } }
     else if (d.st === 'open') {
+      if (d.secret) continue;
       d.timer -= dt;
       if (d.timer <= 0) { if (doorOccupied(d)) d.timer = 1; else { d.st = 'closing'; Sfx.door(Math.hypot(d.x + 0.5 - P.x, d.y + 0.5 - P.y)); } }
     } else if (d.st === 'closing') {
@@ -260,6 +349,18 @@ let sensitivity = 1;
 
 function useAction() {
   const dx = Math.cos(P.a), dy = Math.sin(P.a);
+  // fontaine à eau devant soi
+  for (const f of L.decor) {
+    if (f.type !== 'f') continue;
+    const fx = f.x - P.x, fy = f.y - P.y, d = Math.hypot(fx, fy);
+    if (d < 1.4 && (fx * dx + fy * dy) / d > 0.7) {
+      if (INV.hp >= 100) { msg("Vous n'avez pas soif. Votre ego non plus."); return; }
+      if (f.uses >= 6) { msg('La fontaine est vide.'); return; }
+      f.uses++; INV.hp = Math.min(100, INV.hp + 5);
+      Sfx.slurp(); msg("Glou glou... +5 d'ego"); quip('fountain', 0.4);
+      return;
+    }
+  }
   for (let s = 0.2; s <= 1.8; s += 0.1) {
     const cx = (P.x + dx * s) | 0, cy = (P.y + dy * s) | 0;
     const i = cy * L.w + cx, t = L.map[i];
@@ -272,11 +373,17 @@ function useAction() {
         msg(d.lock === 'red' ? 'Accès refusé : BADGE ROUGE requis' : 'Accès refusé : BADGE BLEU requis');
         return;
       }
+      if (d.secret) {
+        L.secrets++;
+        Sfx.secret();
+        msg('Zone secrète découverte !');
+        quip('secret', 1, true);
+      }
       openDoor(d);
       return;
     }
     if (String.fromCharCode(t) === 'X') {
-      if (L.bossAlive) { Sfx.deny(); msg('Le RANSOMWARE verrouille le système ! Détruisez-le.'); return; }
+      if (L.bossAlive) { Sfx.deny(); msg('Le système est verrouillé ! Détruisez le boss.'); return; }
       completeLevel();
       return;
     }
@@ -289,12 +396,13 @@ function switchWeapon(i) {
   INV.cur = i; P.raise = 1; P.wAnim = 0;
 }
 
+function hasAmmo(i) {
+  const w = WEAPONS[i];
+  return !w.ammo || INV.ammo[w.ammo] >= (w.use || 1);
+}
+
 function bestWeapon() {
-  const order = [4, 3, 2, 1, 0];
-  for (const i of order) {
-    const w = WEAPONS[i];
-    if (INV.weapons[i] && (!w.ammo || INV.ammo[w.ammo] > 0)) return i;
-  }
+  for (const i of [7, 3, 2, 1, 4, 0]) if (INV.weapons[i] && hasAmmo(i)) return i;
   return 0;
 }
 
@@ -306,23 +414,31 @@ function updatePlayer(dt) {
   const fwd = ((keys.KeyW || keys.ArrowUp) ? 1 : 0) - ((keys.KeyS || keys.ArrowDown) ? 1 : 0);
   const str = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
   const dx = Math.cos(P.a), dy = Math.sin(P.a);
-  let mx = dx * fwd - dy * str, my = dy * fwd + dx * str;
+  const mx = dx * fwd - dy * str, my = dy * fwd + dx * str;
   const len = Math.hypot(mx, my);
   const run = keys.ShiftLeft || keys.ShiftRight;
+  if (P.boostT > 0) P.boostT -= dt;
   if (len > 0) {
-    const sp = (run ? 5.6 : 3.8) * dt / len;
+    const sp = (run ? 5.6 : 3.8) * (P.boostT > 0 ? 1.45 : 1) * dt / len;
     moveEntity(P, mx * sp, my * sp, 0.28, true);
     P.bobPhase += dt * (run ? 11 : 8);
     P.bobAmt = Math.min(1, P.bobAmt + dt * 4);
   } else P.bobAmt = Math.max(0, P.bobAmt - dt * 4);
 
-  // ramassage
-  for (const it of L.items) {
-    if (it.taken) continue;
-    if ((it.x - P.x) ** 2 + (it.y - P.y) ** 2 < 0.36 && pickup(it)) { it.taken = true; L.itemsGot++; }
+  // écrasement des ennemis compressés
+  for (const e of L.enemies) {
+    if (!alive(e) || e.shrunk <= 0) continue;
+    if ((e.x - P.x) ** 2 + (e.y - P.y) ** 2 < 0.45 * 0.45) {
+      e.hp = 0; killEnemy(e, 'stomp');
+      Sfx.squish(); msg('SPLAT !'); quip('stomp', 0.8, true);
+    }
   }
 
-  // tir
+  for (const it of L.items) {
+    if (it.taken) continue;
+    if ((it.x - P.x) ** 2 + (it.y - P.y) ** 2 < 0.36 && pickup(it)) { it.taken = true; if (!it.drop) L.itemsGot++; }
+  }
+
   P.fireCd -= dt;
   P.raise = Math.max(0, P.raise - dt * 4);
   if (P.wAnim > 0) P.wAnim = Math.max(0, P.wAnim - dt / WEAPONS[INV.cur].anim);
@@ -330,11 +446,11 @@ function updatePlayer(dt) {
   if (firing && INV.cur === 3) P.spin += dt * 40;
   if (firing && P.fireCd <= 0 && P.raise < 0.3) fire();
 
-  // visage
   P.faceT -= dt; if (P.faceT <= 0) P.faceMood = '';
   P.lookT -= dt; if (P.lookT <= 0) { P.look = randi(-1, 1); P.lookT = rand(0.6, 1.8); }
   if (P.hurtT > 0) P.hurtT -= dt;
   if (P.pickT > 0) P.pickT -= dt;
+  if (P.shake > 0) P.shake = Math.max(0, P.shake - dt * 1.6);
 }
 
 function pickup(it) {
@@ -342,29 +458,38 @@ function pickup(it) {
     if (INV.ammo[k] >= AMMO_MAX[k]) return false;
     INV.ammo[k] = Math.min(AMMO_MAX[k], INV.ammo[k] + n); return true;
   };
-  const giveWeapon = (i, k, n, text) => {
+  const giveWeapon = (ch, k, n, text) => {
+    const i = WEAPON_SLOT[ch];
     const isNew = !INV.weapons[i];
+    if (!isNew && !add(k, n)) return false;
     INV.weapons[i] = true;
-    add(k, n);
-    if (isNew) switchWeapon(i);
+    if (isNew) { add(k, n); switchWeapon(i); quip('weapon', 1, true); }
     msg(text);
     Sfx.weaponPickup();
-    P.faceMood = 'grin'; P.faceT = 1.5;
+    P.faceMood = 'grin'; P.faceT = 1.5; P.pickT = 0.3;
     return true;
   };
   let ok = true, text = '';
   switch (it.type) {
-    case '+': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 10); text = 'Café serré : +10 santé'; break;
-    case 'H': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 25); text = 'Kit de secours : +25 santé'; break;
+    case '+': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 10); text = "Café serré : +10 d'ego"; break;
+    case 'H': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 25); text = "Kit de secours : +25 d'ego"; break;
     case 'A': if (INV.armor >= 100) return false; INV.armor = 100; text = 'Firewall activé : armure 100%'; break;
-    case 'a': ok = add('bullets', 20); text = 'Paquets de données (+20)'; break;
+    case 'j': P.boostT = 15; text = 'Boisson énergisante : TURBO pendant 15 s !'; quip('drink', 0.7); break;
+    case 'a': ok = add('nuts', it.drop ? 10 : 30); text = 'Écrous cagés M6'; break;
     case 's': ok = add('shells', 8); text = 'Trames jumbo (+8)'; break;
+    case 'k': ok = add('sfp', 4); text = 'Modules SFP+ (+4 roquettes)'; break;
+    case 'g':
+      if (!INV.weapons[5]) return giveWeapon('G', 'hdd', 2, 'DISQUES DURS récupérés ! [6]');
+      ok = add('hdd', 2); text = 'Disques durs (+2)'; break;
     case 'c': ok = add('cells', 40); text = "Cellules d'énergie (+40)"; break;
     case 'r': L.keys.red = true; msg("Badge d'accès ROUGE récupéré"); Sfx.key(); P.pickT = 0.3; return true;
     case 'u': L.keys.blue = true; msg("Badge d'accès BLEU récupéré"); Sfx.key(); P.pickT = 0.3; return true;
-    case 'F': P.pickT = 0.3; return giveWeapon(2, 'shells', 8, 'FUSIL À PAQUETS récupéré ! [3]');
-    case 'M': P.pickT = 0.3; return giveWeapon(3, 'bullets', 40, 'MITRAILLEUSE GIGABIT récupérée ! [4]');
-    case 'L': P.pickT = 0.3; return giveWeapon(4, 'cells', 60, 'CANON OVERCLOCK récupéré ! [5]');
+    case 'F': return giveWeapon('F', 'shells', 8, 'FUSIL À PAQUETS récupéré ! [3]');
+    case 'M': return giveWeapon('M', 'nuts', 60, 'RIVETEUSE GATLING récupérée ! [4]');
+    case 'K': return giveWeapon('K', 'sfp', 5, 'BAZOOKA SFP récupéré ! [5]');
+    case 'G': return giveWeapon('G', 'hdd', 5, 'DISQUES DURS récupérés ! [6]');
+    case 'Y': return giveWeapon('Y', 'cells', 40, 'COMPRESSEUR ZIP récupéré ! [7]');
+    case 'L': return giveWeapon('L', 'cells', 60, 'CANON OVERCLOCK récupéré ! [8]');
   }
   if (!ok) return false;
   msg(text);
@@ -375,58 +500,65 @@ function pickup(it) {
 
 function fire() {
   const w = WEAPONS[INV.cur];
-  if (w.ammo && INV.ammo[w.ammo] <= 0) {
+  if (!hasAmmo(INV.cur)) {
     Sfx.click();
     P.fireCd = 0.35;
     const b = bestWeapon();
     if (b !== INV.cur) switchWeapon(b);
     return;
   }
-  if (w.ammo) INV.ammo[w.ammo]--;
+  if (w.ammo) INV.ammo[w.ammo] -= (w.use || 1);
   P.fireCd = w.rate;
   P.wAnim = 1;
-  if (!w.melee) P.flashT = 0.07;
-
-  if (w.melee) {
-    Sfx.fist();
-    meleeAttack(w);
-    return;
-  }
-  // réveille les ennemis qui entendent le tir
+  if (w.melee) { Sfx.fist(); meleeAttack(w); return; }
+  if (w.proj !== 'hdd' && w.proj !== 'zip') P.flashT = 0.07;
+  if (w.proj === 'sfp') P.shake = Math.max(P.shake, 0.25);
+  Sfx[w.sfx]();
+  // le bruit réveille les ennemis
   for (const e of L.enemies) {
     if (e.state !== 'idle') continue;
     const d = Math.hypot(e.x - P.x, e.y - P.y);
     if (d < 7 || (d < 16 && hasLOS(e.x, e.y, P.x, P.y))) e.alerted = true;
   }
-  if (w.projectile) {
-    Sfx.plasma();
-    const dx = Math.cos(P.a), dy = Math.sin(P.a);
-    L.proj.push({ x: P.x + dx * 0.3, y: P.y + dy * 0.3, vx: dx * 15, vy: dy * 15, kind: 'plasma', dmg: randi(w.dmg[0], w.dmg[1]), owner: 'player', z: 0.28, life: 3 });
+  if (w.proj) {
+    const a = P.a + (Math.random() - 0.5) * 2 * w.spread;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    const p = { x: P.x + dx * 0.3, y: P.y + dy * 0.3, vx: dx * w.speed, vy: dy * w.speed, kind: w.proj, dmg: randi(w.dmg[0], w.dmg[1]), owner: 'player', z: 0.3, life: 4, t: 0 };
+    if (w.proj === 'nut') { p.scale = 0.2; p.z = 0.3; }
+    if (w.proj === 'sfp') { p.scale = 0.3; p.z = 0.25; }
+    if (w.proj === 'zip') { p.scale = 0.3; }
+    if (w.proj === 'hdd') { p.scale = 0.22; p.z = 0.45; p.vz = 1.6; p.fuse = 1.7; p.life = 10; }
+    L.proj.push(p);
     return;
   }
-  if (INV.cur === 1) Sfx.pistol(); else if (INV.cur === 2) Sfx.shotgun(); else Sfx.chaingun();
-  for (let i = 0; i < w.pellets; i++) {
-    const a = P.a + (Math.random() - 0.5) * 2 * w.spread;
-    hitscan(a, randi(w.dmg[0], w.dmg[1]));
-  }
+  for (let i = 0; i < w.pellets; i++) hitscan(P.a + (Math.random() - 0.5) * 2 * w.spread, randi(w.dmg[0], w.dmg[1]));
 }
 
 function hitscan(a, dmg) {
   const dx = Math.cos(a), dy = Math.sin(a);
   castRay(P.x, P.y, dx, dy);
   const wallD = RH.d;
-  let best = null, bestD = wallD;
+  let best = null, bestD = wallD, barrel = null;
+  const test = (ox, oy, r) => {
+    const ex = ox - P.x, ey = oy - P.y, along = ex * dx + ey * dy;
+    return along > 0 && along < bestD && Math.abs(ex * dy - ey * dx) < r ? along : -1;
+  };
   for (const e of L.enemies) {
-    if (e.state === 'dead' || e.state === 'dying') continue;
-    const ex = e.x - P.x, ey = e.y - P.y;
-    const along = ex * dx + ey * dy;
-    if (along <= 0 || along >= bestD) continue;
-    const perp = Math.abs(ex * dy - ey * dx);
-    if (perp < ETYPES[e.type].radius + 0.05) { best = e; bestD = along; }
+    if (!alive(e)) continue;
+    const r = ETYPES[e.type].radius * (e.shrunk > 0 ? 0.4 : 1) + 0.05;
+    const al = test(e.x, e.y, r);
+    if (al > 0) { best = e; barrel = null; bestD = al; }
+  }
+  for (const b of L.barrels) {
+    if (b.dead) continue;
+    const al = test(b.x, b.y, 0.35);
+    if (al > 0) { barrel = b; best = null; bestD = al; }
   }
   if (best) {
     addFx(P.x + dx * (bestD - 0.2), P.y + dy * (bestD - 0.2), 'spark', 0.35 + ETYPES[best.type].z, 0.25);
     damageEnemy(best, dmg);
+  } else if (barrel) {
+    damageBarrel(barrel, dmg);
   } else if (wallD < 60) {
     addFx(P.x + dx * (wallD - 0.05), P.y + dy * (wallD - 0.05), 'spark', 0.3 + Math.random() * 0.3, 0.2);
   }
@@ -436,13 +568,35 @@ function meleeAttack(w) {
   const dx = Math.cos(P.a), dy = Math.sin(P.a);
   let best = null, bestD = w.range;
   for (const e of L.enemies) {
-    if (e.state === 'dead' || e.state === 'dying') continue;
+    if (!alive(e)) continue;
     const ex = e.x - P.x, ey = e.y - P.y;
     const along = ex * dx + ey * dy;
     if (along <= 0 || along > bestD + ETYPES[e.type].radius) continue;
     if (Math.abs(ex * dy - ey * dx) < ETYPES[e.type].radius + 0.3) { best = e; bestD = along; }
   }
-  if (best) { damageEnemy(best, randi(w.dmg[0], w.dmg[1])); Sfx.melee(0); }
+  if (best) { damageEnemy(best, randi(w.dmg[0], w.dmg[1])); Sfx.melee(0); return; }
+  // coup de clavier dans une baie : migration Nutanix des racks spéciaux
+  castRay(P.x, P.y, dx, dy);
+  if (RH.d > 1.5 || !RH.tile) return;
+  const ch = String.fromCharCode(RH.tile);
+  const i = RH.my * L.w + RH.mx;
+  if ('3456'.includes(ch)) {
+    L.map[i] = '7'.charCodeAt(0);
+    L.migrated++;
+    Sfx.nutanix();
+    const hx = P.x + dx * (RH.d - 0.1), hy = P.y + dy * (RH.d - 0.1);
+    addFx(hx, hy, 'nutanix', 0.55, 0.7, 0.5);
+    P.pickT = 0.2;
+    msg(`Rack ${SPECIAL_NAMES[ch]} migré vers NUTANIX ! (${L.migrated}/${L.totalSpecials})`);
+    if (L.migrated === L.totalSpecials) {
+      msg('DATACENTER 100% NUTANIX ! Bonus : armure +50');
+      INV.armor = Math.min(200, INV.armor + 50);
+      quip('nutanixAll', 1, true);
+    } else quip('nutanix', 0.8, true);
+  } else if ('RSNC7'.includes(ch)) {
+    Sfx.melee(0);
+    addFx(P.x + dx * (RH.d - 0.1), P.y + dy * (RH.d - 0.1), 'spark', 0.45, 0.2);
+  }
 }
 
 function damagePlayer(dmg, fromX, fromY) {
@@ -451,7 +605,7 @@ function damagePlayer(dmg, fromX, fromY) {
     const ab = Math.min(INV.armor, Math.floor(dmg / 3));
     INV.armor -= ab; dmg -= ab;
   }
-  INV.hp -= dmg;
+  INV.hp -= Math.round(dmg);
   P.hurtT = 0.35;
   P.faceMood = 'ouch'; P.faceT = 0.6;
   if (fromX !== undefined) {
@@ -462,10 +616,71 @@ function damagePlayer(dmg, fromX, fromY) {
   if (INV.hp <= 0) {
     INV.hp = 0; P.dead = true; P.deadT = 0; firing = false;
     Sfx.playerDeath();
-  } else Sfx.hurt();
+  } else {
+    Sfx.hurt();
+    if (INV.hp < 35) quip('hurt', 0.25);
+  }
+}
+
+/* ----------------------------------------------------- explosions & barils */
+
+function damageBarrel(b, dmg) {
+  b.hp -= dmg;
+  if (b.hp <= 0 && b.fuse < 0) b.fuse = 0.01;
+}
+
+function explode(x, y, radius, dmg) {
+  const dp = Math.hypot(P.x - x, P.y - y);
+  Sfx.bigBoom(dp);
+  addFx(x, y, 'bigBoom', 0.1, 0.6, 1.5);
+  P.shake = Math.max(P.shake, Math.max(0, 0.9 - dp / 12));
+  let kills = 0;
+  for (const e of L.enemies) {
+    if (!alive(e)) continue;
+    const d = Math.hypot(e.x - x, e.y - y);
+    if (d < radius + ETYPES[e.type].radius && hasLOS(x, y, e.x, e.y)) {
+      damageEnemy(e, dmg * (1 - 0.6 * d / radius));
+      if (!alive(e)) kills++;
+    }
+  }
+  if (dp < radius && hasLOS(x, y, P.x, P.y)) damagePlayer(dmg * 0.5 * (1 - dp / radius), x, y);
+  for (const b of L.barrels) {
+    if (b.dead || b.fuse >= 0) continue;
+    if (Math.hypot(b.x - x, b.y - y) < radius) b.fuse = rand(0.1, 0.25);
+  }
+  if (kills >= 2) quip('barrel', 0.6);
+}
+
+function updateBarrels(dt) {
+  for (const b of L.barrels) {
+    if (b.dead || b.fuse < 0) continue;
+    b.fuse -= dt;
+    if (b.fuse <= 0) {
+      b.dead = true;
+      L.block[(b.y | 0) * L.w + (b.x | 0)] = 0;
+      explode(b.x, b.y, 2.6, 120);
+    }
+  }
 }
 
 /* ----------------------------------------------------------------- ennemis */
+
+function killEnemy(e, how) {
+  const T = ETYPES[e.type];
+  const dist = Math.hypot(e.x - P.x, e.y - P.y);
+  e.state = 'dying'; e.timer = 0.5; e.shrunk = 0;
+  L.kills++;
+  Sfx.enemyDeath(sndKind(e), dist);
+  if (how !== 'stomp') addFx(e.x, e.y, 'boom', 0.2 + T.z, T.boss ? 1.5 : 0.5);
+  if ((e.type === 'bot' || e.type === 'spam') && Math.random() < 0.7) L.items.push({ x: e.x, y: e.y, type: 'a', taken: false, drop: true });
+  if (T.boss) {
+    L.bossAlive = false;
+    P.shake = 1;
+    msg(`${T.name} ÉLIMINÉ ! Le terminal de REBOOT est déverrouillé.`);
+    quip('bossKill', 1, true);
+    for (const o of L.enemies) if (o !== e && alive(o)) { o.hp = 0; killEnemy(o); }
+  } else if (how !== 'stomp') quip('kill', 0.18);
+}
 
 function damageEnemy(e, dmg) {
   const T = ETYPES[e.type];
@@ -473,41 +688,38 @@ function damageEnemy(e, dmg) {
   e.hp -= dmg;
   e.flash = 0.08;
   e.alerted = true;
-  if (e.hp <= 0) {
-    e.state = 'dying'; e.timer = 0.5;
-    L.kills++;
-    Sfx.enemyDeath(e.type, dist);
-    addFx(e.x, e.y, 'boom', 0.2 + T.z, e.type === 'boss' ? 1.5 : 0.5);
-    if (e.type === 'bot' && Math.random() < 0.7) L.items.push({ x: e.x, y: e.y, type: 'a', taken: false, drop: true });
-    if (e.type === 'boss') {
-      L.bossAlive = false;
-      msg('RANSOMWARE ÉLIMINÉ ! Rebootez le datacenter.');
-      for (const o of L.enemies) if (o !== e && o.state !== 'dead' && o.state !== 'dying') damageEnemy(o, 9999);
-    }
-    return;
-  }
-  if (e.state === 'idle') { e.state = 'chase'; Sfx.alert(e.type, dist); }
-  if (Math.random() < T.pain) { e.painT = 0.22; Sfx.enemyPain(e.type, dist); if (e.state === 'attack' && e.type !== 'boss') e.state = 'chase'; }
+  if (e.hp <= 0) { killEnemy(e); return; }
+  if (e.state === 'idle') { e.state = 'chase'; Sfx.alert(sndKind(e), dist); }
+  if (Math.random() < T.pain) { e.painT = 0.22; Sfx.enemyPain(sndKind(e), dist); if (e.state === 'attack' && !T.boss) e.state = 'chase'; }
+}
+
+function shrinkEnemy(e) {
+  const T = ETYPES[e.type];
+  if (T.boss) { msg(`${T.name} est trop gros pour être compressé !`); damageEnemy(e, 40); return; }
+  e.shrunk = 8; e.state = 'chase'; e.painT = 0.3; e.alerted = true;
+  msg(`${T.name} compressé en .zip ! Écrasez-le !`);
 }
 
 function passableForEnemy(i) {
   if (L.block[i]) return false;
   if (!L.map[i]) return true;
   const d = L.doors[i];
-  return !!d && (!d.lock || d.open > 0.9);
+  return !!d && ((!d.lock && !d.secret) || d.open > 0.9);
 }
 
+let flowQueue = new Int32Array(1);
 function computeFlow() {
   const f = L.flow; f.fill(-1);
   const w = L.w;
+  if (flowQueue.length < L.w * L.h) flowQueue = new Int32Array(L.w * L.h);
+  const q = flowQueue;
   const s = (P.y | 0) * w + (P.x | 0);
-  const q = new Int32Array(L.w * L.h);
   let qh = 0, qt = 0;
   f[s] = 0; q[qt++] = s;
   while (qh < qt) {
     const c = q[qh++], cx = c % w, cy = (c / w) | 0;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = cx + dx, ny = cy + dy;
+    for (let k = 0; k < 4; k++) {
+      const nx = cx + (k === 0 ? 1 : k === 1 ? -1 : 0), ny = cy + (k === 2 ? 1 : k === 3 ? -1 : 0);
       if (nx < 0 || ny < 0 || nx >= w || ny >= L.h) continue;
       const n = ny * w + nx;
       if (f[n] >= 0 || !passableForEnemy(n)) continue;
@@ -537,33 +749,38 @@ function enemyFire(e) {
   const dist = Math.hypot(P.x - e.x, P.y - e.y);
   const ang = Math.atan2(P.y - e.y, P.x - e.x);
   const shoot = (a, kind, speed, scale) => {
-    L.proj.push({ x: e.x + Math.cos(a) * T.radius, y: e.y + Math.sin(a) * T.radius, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, kind, dmg: randi(T.dmg[0], T.dmg[1]), owner: 'enemy', z: T.shotZ - scale / 2, scale, life: 5 });
+    L.proj.push({ x: e.x + Math.cos(a) * T.radius, y: e.y + Math.sin(a) * T.radius, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, kind,
+      dmg: randi(T.dmg[0], T.dmg[1]), owner: 'enemy', z: T.shotZ - scale / 2, scale, life: 5, t: 0 });
   };
-  Sfx.enemyShoot(e.type, dist);
-  if (e.type === 'boss') {
-    for (let k = -2; k <= 2; k++) shoot(ang + k * 0.13, 'boss', 7.5, 0.5);
+  Sfx.enemyShoot(sndKind(e), dist);
+  if (T.boss) {
+    const n = e.type === 'zeroday' ? 7 : 5;
+    for (let k = 0; k < n; k++) shoot(ang + (k - (n - 1) / 2) * 0.13, T.shot, 7.5, 0.5);
     e.attacks++;
     if (e.attacks % 4 === 0) spawnMinions(e);
+  } else if (T.fan) {
+    for (let k = 0; k < T.fan; k++) shoot(ang + (k - (T.fan - 1) / 2) * 0.18, T.shot, 9, 0.22);
   } else if (e.type === 'drone') shoot(ang + rand(-0.05, 0.05), 'orb', 7, 0.35);
   else shoot(ang + rand(-0.07, 0.07), 'bolt', 12, 0.25);
 }
 
 function spawnMinions(boss) {
-  const alive = L.enemies.filter((o) => o.type === 'bug' && o.state !== 'dead' && o.state !== 'dying').length;
-  if (alive >= 6) return;
+  const type = ETYPES[boss.type].minion;
+  const n = L.enemies.filter((o) => o.type === type && alive(o)).length;
+  if (n >= 6) return;
   for (let k = 0; k < 2; k++) {
     for (let tries = 0; tries < 12; tries++) {
       const a = Math.random() * Math.PI * 2, r = rand(1.2, 2.5);
       const x = boss.x + Math.cos(a) * r, y = boss.y + Math.sin(a) * r;
-      if (!blocked(x, y, 0.3) && hasLOS(boss.x, boss.y, x, y)) {
-        const b = spawnEnemy('bug', x, y);
+      if (!blocked(x, y, 0.35) && hasLOS(boss.x, boss.y, x, y)) {
+        const b = spawnEnemy(type, x, y);
         b.state = 'chase'; b.alerted = true;
         addFx(x, y, 'plasmaHit', 0.2, 0.4);
         break;
       }
     }
   }
-  msg('Le RANSOMWARE génère des bugs !');
+  msg(`${ETYPES[boss.type].name} appelle des renforts !`);
 }
 
 function updateEnemy(e, dt) {
@@ -578,11 +795,16 @@ function updateEnemy(e, dt) {
     e.losT = rand(0.12, 0.25);
   }
   if (e.state === 'idle') {
-    if (e.sees || e.alerted) { e.state = 'chase'; e.cd = rand(0.3, T.cd); Sfx.alert(e.type, dist); }
+    if (e.sees || e.alerted) {
+      e.state = 'chase'; e.cd = rand(0.3, T.cd); Sfx.alert(sndKind(e), dist);
+      if (T.boss && !L.bossSeen) { L.bossSeen = true; quip('boss', 1, true); }
+    }
     return;
   }
   e.animT += dt;
   if (e.painT > 0) { e.painT -= dt; return; }
+  const shrunk = e.shrunk > 0;
+  if (shrunk) { e.shrunk -= dt; if (e.shrunk <= 0) msg(`${T.name} s'est décompressé !`); }
   e.cd -= dt;
   if (e.state === 'attack') {
     e.timer -= dt;
@@ -592,7 +814,7 @@ function updateEnemy(e, dt) {
   }
   if (P.dead) return;
 
-  if (e.cd <= 0 && e.sees) {
+  if (!shrunk && e.cd <= 0 && e.sees) {
     if (T.melee) {
       if (dist < T.atkRange + 0.25) {
         e.state = 'attack'; e.timer = 0.45; e.cd = T.cd;
@@ -610,25 +832,29 @@ function updateEnemy(e, dt) {
     }
   }
 
-  // déplacement
   let tx, ty;
-  const keep = T.melee ? 0 : (e.type === 'boss' ? 3.5 : 3);
-  if (e.sees) {
-    if (dist > keep) { tx = P.x; ty = P.y; }
-    else { tx = e.x - (dy / dist) * e.strafe; ty = e.y + (dx / dist) * e.strafe; }
+  if (shrunk) {
+    // un ennemi compressé fuit
+    tx = e.x - dx; ty = e.y - dy;
   } else {
-    const t = flowTarget(e);
-    if (!t) return;
-    tx = t.x; ty = t.y;
+    const keep = T.melee ? 0 : (T.boss ? 3.5 : 3);
+    if (e.sees) {
+      if (dist > keep) { tx = P.x; ty = P.y; }
+      else { tx = e.x - (dy / dist) * e.strafe; ty = e.y + (dx / dist) * e.strafe; }
+    } else {
+      const t = flowTarget(e);
+      if (!t) return;
+      tx = t.x; ty = t.y;
+    }
   }
   const mdx = tx - e.x, mdy = ty - e.y, md = Math.hypot(mdx, mdy);
   if (md < 0.01) return;
-  const sp = T.speed * dt;
+  const sp = T.speed * (shrunk ? 0.7 : 1) * dt;
+  const r = shrunk ? 0.12 : T.radius;
   const ox = e.x, oy = e.y;
-  moveEntity(e, mdx / md * sp, mdy / md * sp, T.radius, false);
-  // pas de chevauchement avec le joueur
-  const pr = T.radius + 0.28;
-  if ((e.x - P.x) ** 2 + (e.y - P.y) ** 2 < pr * pr) { e.x = ox; e.y = oy; }
+  moveEntity(e, mdx / md * sp, mdy / md * sp, r, false);
+  const pr = r + 0.28;
+  if (!shrunk && (e.x - P.x) ** 2 + (e.y - P.y) ** 2 < pr * pr) { e.x = ox; e.y = oy; }
   if (Math.abs(e.x - ox) + Math.abs(e.y - oy) < sp * 0.3) e.strafe = -e.strafe;
   if (Math.random() < dt * 0.3) e.strafe = -e.strafe;
 }
@@ -637,11 +863,13 @@ function separateEnemies() {
   const list = L.enemies;
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
-    if (a.state === 'dead' || a.state === 'dying') continue;
+    if (!alive(a)) continue;
     for (let j = i + 1; j < list.length; j++) {
       const b = list[j];
-      if (b.state === 'dead' || b.state === 'dying') continue;
-      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+      if (!alive(b)) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      if (Math.abs(dx) > 1.5 || Math.abs(dy) > 1.5) continue;
+      const d = Math.hypot(dx, dy);
       const min = ETYPES[a.type].radius + ETYPES[b.type].radius;
       if (d > 0.001 && d < min) {
         const push = (min - d) * 0.25, px = dx / d * push, py = dy / d * push;
@@ -654,8 +882,8 @@ function separateEnemies() {
 
 /* ------------------------------------------------------ projectiles & fx */
 
-function addFx(x, y, kind, z, dur) {
-  L.fx.push({ x, y, kind, z, t: 0, dur, scale: kind === 'boom' ? 0.8 : 0.35 });
+function addFx(x, y, kind, z, dur, scale) {
+  L.fx.push({ x, y, kind, z, t: 0, dur, scale: scale || (kind === 'boom' ? 0.8 : kind === 'nutanix' ? 0.9 : 0.35) });
 }
 
 function projHitsWall(x, y) {
@@ -667,42 +895,81 @@ function projHitsWall(x, y) {
   return !d || d.open < 0.9;
 }
 
+function projImpact(p) {
+  p.dead = true;
+  if (p.kind === 'sfp') explode(p.x - p.vx * 0.01, p.y - p.vy * 0.01, 2.5, p.dmg);
+  else if (p.kind === 'hdd') explode(p.x, p.y, 2.8, p.dmg);
+  else addFx(p.x - p.vx * 0.01, p.y - p.vy * 0.01, p.kind === 'plasma' || p.kind === 'zip' ? 'plasmaHit' : p.owner === 'player' ? 'spark' : 'boom', p.z, 0.25);
+}
+
 function updateProjectiles(dt) {
   for (const p of L.proj) {
     if (p.dead) continue;
+    p.t += dt;
     p.life -= dt;
-    if (p.life <= 0) { p.dead = true; continue; }
+    if (p.life <= 0) { if (p.kind === 'hdd') projImpact(p); else p.dead = true; continue; }
+    if (p.kind === 'hdd') { updateHdd(p, dt); continue; }
+    if (p.kind === 'sfp' && Math.random() < dt * 30) addFx(p.x - p.vx * 0.03, p.y - p.vy * 0.03, 'smoke', p.z + 0.1, 0.4, 0.25);
     const steps = Math.ceil(Math.hypot(p.vx, p.vy) * dt / 0.1);
     for (let s = 0; s < steps && !p.dead; s++) {
       p.x += p.vx * dt / steps; p.y += p.vy * dt / steps;
-      if (projHitsWall(p.x, p.y)) {
-        p.dead = true;
-        addFx(p.x - p.vx * 0.01, p.y - p.vy * 0.01, p.kind === 'plasma' ? 'plasmaHit' : 'boom', p.z, 0.25);
-        break;
-      }
+      if (projHitsWall(p.x, p.y)) { projImpact(p); break; }
       if (p.owner === 'enemy') {
         if (!P.dead && (p.x - P.x) ** 2 + (p.y - P.y) ** 2 < 0.35 * 0.35) {
           p.dead = true;
           damagePlayer(p.dmg, p.x - p.vx, p.y - p.vy);
           addFx(p.x, p.y, 'boom', p.z, 0.2);
         }
-      } else {
-        for (const e of L.enemies) {
-          if (e.state === 'dead' || e.state === 'dying') continue;
-          const r = ETYPES[e.type].radius + 0.12;
-          if ((p.x - e.x) ** 2 + (p.y - e.y) ** 2 < r * r) {
-            p.dead = true;
-            damageEnemy(e, p.dmg);
-            addFx(p.x, p.y, 'plasmaHit', p.z, 0.25);
-            break;
-          }
-        }
+        continue;
       }
+      projHitsTargets(p);
     }
   }
   L.proj = L.proj.filter((p) => !p.dead);
   for (const f of L.fx) f.t += dt;
   L.fx = L.fx.filter((f) => f.t < f.dur);
+}
+
+function projHitsTargets(p) {
+  for (const e of L.enemies) {
+    if (!alive(e)) continue;
+    const r = ETYPES[e.type].radius * (e.shrunk > 0 ? 0.4 : 1) + 0.12;
+    if ((p.x - e.x) ** 2 + (p.y - e.y) ** 2 < r * r) {
+      if (p.kind === 'zip') { p.dead = true; shrinkEnemy(e); addFx(p.x, p.y, 'plasmaHit', p.z, 0.3); }
+      else if (p.kind === 'sfp' || p.kind === 'hdd') projImpact(p);
+      else { p.dead = true; damageEnemy(e, p.dmg); addFx(p.x, p.y, p.kind === 'plasma' ? 'plasmaHit' : 'spark', p.z, 0.25); }
+      return true;
+    }
+  }
+  for (const b of L.barrels) {
+    if (b.dead) continue;
+    if ((p.x - b.x) ** 2 + (p.y - b.y) ** 2 < 0.4 * 0.4) {
+      if (p.kind === 'sfp' || p.kind === 'hdd') projImpact(p);
+      else { p.dead = true; damageBarrel(b, p.kind === 'zip' ? 0 : p.dmg); addFx(p.x, p.y, 'spark', p.z, 0.2); }
+      return true;
+    }
+  }
+  return false;
+}
+
+// Disque dur lancé : trajectoire en cloche, rebonds sur murs et sol, mèche de 1,7 s.
+function updateHdd(p, dt) {
+  p.fuse -= dt;
+  if (p.fuse <= 0) { projImpact(p); return; }
+  const fr = Math.max(0, 1 - (p.z <= 0.06 ? 3 : 0.4) * dt);
+  p.vx *= fr; p.vy *= fr;
+  const nx = p.x + p.vx * dt, ny = p.y + p.vy * dt;
+  if (blockedProj(nx, p.y)) { p.vx = -p.vx * 0.55; Sfx.bounce(Math.hypot(p.x - P.x, p.y - P.y)); } else p.x = nx;
+  if (blockedProj(p.x, ny)) { p.vy = -p.vy * 0.55; Sfx.bounce(Math.hypot(p.x - P.x, p.y - P.y)); } else p.y = ny;
+  p.vz -= 6 * dt;
+  p.z += p.vz * dt;
+  if (p.z < 0.05) { p.z = 0.05; if (Math.abs(p.vz) > 0.8) Sfx.bounce(Math.hypot(p.x - P.x, p.y - P.y)); p.vz = -p.vz * 0.45; }
+  if (p.t > 0.15) projHitsTargets(p);
+}
+function blockedProj(x, y) {
+  if (projHitsWall(x, y)) return true;
+  const i = (y | 0) * L.w + (x | 0);
+  return L.block[i] && !L.barrels.some((b) => !b.dead && (b.x | 0) === (x | 0) && (b.y | 0) === (y | 0));
 }
 
 /* ------------------------------------------------------------------ rendu */
@@ -713,7 +980,7 @@ function shade(c, s) {
 
 function lightAt(d) {
   const amb = L.def.ambient + (P.flashT > 0 ? 0.35 : 0);
-  let s = 256 * amb / (1 + d * 0.1 + d * d * 0.012);
+  const s = 256 * amb / (1 + d * 0.1 + d * d * 0.012);
   return s > 256 ? 256 : s | 0;
 }
 
@@ -722,6 +989,7 @@ function render() {
   const plX = -dirY * PLANE, plY = dirX * PLANE;
   const w = L.w, h = L.h;
   const floorT = Assets.floor, ceilT = Assets.ceil;
+  const concreteT = Assets.concrete[L.def.episode % 5];
 
   // sol et plafond
   const rdx0 = dirX - plX, rdy0 = dirY - plY, rdx1 = dirX + plX, rdy1 = dirY + plY;
@@ -736,8 +1004,7 @@ function render() {
       if (fx < 0 || fy < 0 || fx >= w || fy >= h) { buf[fo + x] = 0xff000000; buf[co + x] = 0xff000000; continue; }
       const cx = fx | 0, cy = fy | 0, ci = cy * w + cx;
       const ti = ((((fy - cy) * 64) | 0) << 6) | (((fx - cx) * 64) | 0);
-      const ft = floorT[L.floor[ci]];
-      buf[fo + x] = shade(ft.px[ti], s);
+      buf[fo + x] = shade(floorT[L.floor[ci]].px[ti], s);
       const ct = ceilT[L.ceil[ci]];
       buf[co + x] = ct.em[ti] ? ct.px[ti] : shade(ct.px[ti], s);
     }
@@ -755,11 +1022,12 @@ function render() {
     const top = HORIZ - lh / 2;
     const y0 = Math.max(0, Math.ceil(top)), y1 = Math.min(VH - 1, Math.floor(HORIZ + lh / 2));
     const vi = RH.my * w + RH.mx;
-    const vars = Assets.walls[String.fromCharCode(RH.tile)];
+    const ch = String.fromCharCode(RH.tile);
+    const vars = ch === '#' || ch === '?' ? concreteT : Assets.walls[ch];
     const frames = vars[L.variant[vi] % vars.length];
     const tex = frames[(animFrame + L.variant[vi]) % frames.length];
     let tx = (RH.wx * 64) | 0;
-    if ((RH.side === 0 && rdx > 0) || (RH.side === 1 && rdy < 0)) tx = 63 - tx;
+    if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = 63 - tx;
     let s = lightAt(d);
     if (RH.side === 1) s = (s * 0.78) | 0;
     const step = 64 / lh;
@@ -781,11 +1049,13 @@ function render() {
     const tx = invDet * (dirY * sx - dirX * sy);
     list.push({ spr, scale, z, flash, bright, tx, ty });
   };
-  for (const d of L.decor) add(d.x, d.y, Assets.items[d.type], d.type === 'x' ? 0.9 : 0.6, 0);
+  const frameOf = (a, t, fps) => (Array.isArray(a) ? a[((t * fps) | 0) % a.length] : a);
+  for (const d of L.decor) add(d.x, d.y, Assets.items[d.type], d.type === 'x' ? 0.9 : d.type === 'f' ? 0.75 : 0.6, 0);
+  for (const b of L.barrels) if (!b.dead) add(b.x, b.y, Assets.items.B, 0.75, 0, b.fuse >= 0);
   const bobT = performance.now() / 400;
   for (const it of L.items) {
     if (it.taken) continue;
-    const floaty = 'ruFML'.includes(it.type);
+    const floaty = 'ruFMKGYL'.includes(it.type);
     add(it.x, it.y, Assets.items[it.type], 0.5, floaty ? 0.05 + Math.sin(bobT + it.x) * 0.03 : 0, 0, it.type === 'r' || it.type === 'u');
   }
   for (const e of L.enemies) {
@@ -795,21 +1065,23 @@ function render() {
     else if (e.state === 'dying') spr = S.die[e.timer > 0.25 ? 0 : 1];
     else if (e.state === 'attack') spr = S.atk;
     else if (e.state === 'idle') spr = S.walk[0];
-    else spr = S.walk[((e.animT * (e.type === 'drone' ? 6 : 4)) | 0) % 2];
+    else spr = S.walk[((e.animT * (e.type === 'drone' ? 6 : e.shrunk > 0 ? 10 : 4)) | 0) % 2];
     let z = T.z;
+    let scale = T.scale;
     if (e.type === 'drone' && e.state !== 'dead') z += Math.sin(e.animT * 3 + e.x) * 0.05;
-    if (e.state === 'dead') z = 0;
-    add(e.x, e.y, spr, e.state === 'dead' ? Math.max(0.8, T.scale * 0.7) : T.scale, z, e.flash > 0);
+    if (e.state === 'dead') { z = 0; scale = Math.max(0.8, T.scale * 0.7); }
+    if (e.shrunk > 0 && alive(e)) { scale *= e.shrunk < 1 ? 0.3 + 0.7 * (1 - e.shrunk) : 0.3; z = 0; }
+    add(e.x, e.y, spr, scale, z, e.flash > 0);
   }
-  for (const p of L.proj) add(p.x, p.y, Assets.proj[p.kind], p.scale || 0.35, p.z, false, true);
+  for (const p of L.proj) add(p.x, p.y, frameOf(Assets.proj[p.kind], p.t, 16), p.scale || 0.35, p.z, false, true);
   for (const f of L.fx) {
     const fr = Assets.fx[f.kind];
-    add(f.x, f.y, fr[f.t < f.dur / 2 ? 0 : 1], f.scale, f.z - f.scale / 2, false, true);
+    const i = Math.min(fr.length - 1, (f.t / f.dur * fr.length) | 0);
+    add(f.x, f.y, fr[i], f.scale, f.z - f.scale / 2 + (f.kind === 'smoke' ? f.t * 0.4 : 0), false, true);
   }
   list.sort((a, b) => b.ty - a.ty);
   for (const s of list) drawSprite(s);
 
-  // effet de glitch quand on est touché
   if (P.hurtT > 0.15) {
     for (let k = 0; k < 6; k++) {
       const y = randi(0, VH - 4), hgt = randi(1, 4), off = randi(-12, 12);
@@ -821,7 +1093,6 @@ function render() {
   }
   sctx.putImageData(img, 0, 0);
   drawWeapon(sctx);
-  // viseur
   sctx.fillStyle = 'rgba(120,255,140,0.8)';
   sctx.fillRect(W / 2 - 4, HORIZ, 3, 1); sctx.fillRect(W / 2 + 2, HORIZ, 3, 1);
   sctx.fillRect(W / 2, HORIZ - 4, 1, 3); sctx.fillRect(W / 2, HORIZ + 2, 1, 3);
@@ -866,7 +1137,7 @@ function drawFlash(g, x, y, r, inner, outer) {
 }
 
 function drawHand(g, x, y, s = 1) {
-  g.fillStyle = '#1f3a5f'; g.fillRect(x - 16 * s, y, 40 * s, 60);
+  g.fillStyle = '#5a4a2a'; g.fillRect(x - 16 * s, y, 40 * s, 60);           // manche (t-shirt kaki de Duke... d'admin)
   ell(g, x, y, 18 * s, 13 * s, '#d9a47a');
   g.fillStyle = '#c08a62'; g.fillRect(x - 12 * s, y - 2, 24 * s, 2);
 }
@@ -892,19 +1163,23 @@ function drawWeapon(g) {
         g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(-66 + k * 8.8 + (r % 2) * 2, -10 + r * 7, 7, 1);
       }
       g.fillStyle = `hsl(${(performance.now() / 8) % 360},100%,60%)`; g.fillRect(-70, 14, 140, 2);
-      g.fillStyle = '#1f3a5f'; g.fillRect(34, 16, 40, 60);
+      g.fillStyle = '#5a4a2a'; g.fillRect(34, 16, 40, 60);
       ell(g, 44, 14, 20, 13, '#d9a47a');
       break;
     }
-    case 1: {
-      g.translate(cx, base + t * 16);
+    case 1: { // pistolet à écrous cagés
+      g.translate(cx + 10, base + t * 18);
+      g.rotate(-t * 0.15);
       drawHand(g, 0, -28);
-      g.fillStyle = '#2b2f35'; g.fillRect(-10, -96, 20, 68);
-      g.fillStyle = '#4a515a'; g.fillRect(-10, -96, 20, 34);
-      g.fillStyle = '#5d656f'; g.fillRect(-10, -96, 3, 34);
-      g.fillStyle = '#111'; g.fillRect(-4, -97, 8, 4); g.fillRect(-2, -101, 4, 4);
-      g.fillStyle = '#3dff6a'; g.fillRect(-7, -70, 3, 3);
-      if (flash) drawFlash(g, 0, -108, 24, '#fff6b0', '#ff9a1a');
+      g.fillStyle = '#2b2f35'; g.fillRect(-12, -100, 24, 72);
+      g.fillStyle = '#e8741a'; g.fillRect(-12, -100, 24, 32);           // corps orange façon cloueur
+      g.fillStyle = '#ff9a3a'; g.fillRect(-12, -100, 4, 32);
+      g.fillStyle = '#111'; g.fillRect(-6, -104, 12, 6);
+      // chargeur tubulaire d'écrous
+      g.fillStyle = '#555c64'; g.fillRect(14, -96, 10, 50);
+      for (let i = 0; i < 5; i++) drawCageNut(g, 19, -90 + i * 10, 0.35, 0);
+      if (t < 0.6) drawCageNut(g, 0, -108, 0.55, 0);
+      if (flash) drawFlash(g, 0, -112, 20, '#fff6b0', '#ffb040');
       break;
     }
     case 2: {
@@ -921,12 +1196,14 @@ function drawWeapon(g) {
       if (flash) drawFlash(g, 0, -134, 40, '#fff6b0', '#ff7a1a');
       break;
     }
-    case 3: {
+    case 3: { // riveteuse gatling
       g.translate(cx, base + t * 6);
       drawHand(g, -34, -24);
       g.fillStyle = '#3a3f46'; g.fillRect(-34, -72, 68, 72);
       g.fillStyle = '#50565e'; g.fillRect(-34, -72, 68, 6);
-      g.fillStyle = '#e8c21a'; g.fillRect(20, -50, 12, 30);
+      // trémie d'écrous
+      g.fillStyle = '#6b4a2a'; g.fillRect(22, -66, 26, 30);
+      for (let i = 0; i < 6; i++) drawCageNut(g, 28 + (i % 3) * 7, -58 + ((i / 3) | 0) * 9, 0.3, i);
       const bars = [];
       for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2 + P.spin; bars.push({ x: Math.cos(a) * 14, d: Math.sin(a) }); }
       bars.sort((a, b) => a.d - b.d);
@@ -935,11 +1212,50 @@ function drawWeapon(g) {
         g.fillStyle = `rgb(${l},${l + 6},${l + 14})`;
         g.fillRect(b.x - 4, -132, 8, 62);
       }
-      g.fillStyle = '#2b2f35'; g.fillRect(-22, -110, 44, 6); g.fillRect(-22, -80, 44, 6);
-      if (flash) drawFlash(g, randi(-8, 8), -140, 30, '#fff6b0', '#ff9a1a');
+      g.fillStyle = '#e8741a'; g.fillRect(-22, -110, 44, 6); g.fillRect(-22, -80, 44, 6);
+      if (flash) drawFlash(g, randi(-8, 8), -140, 26, '#fff6b0', '#ffb040');
       break;
     }
-    case 4: {
+    case 4: { // bazooka SFP (à l'épaule, à droite)
+      g.translate(cx + 40, base + t * 22);
+      drawHand(g, -10, -30);
+      g.fillStyle = '#3a4a2a'; g.beginPath(); g.moveTo(-6, 0); g.lineTo(60, 0); g.lineTo(28, -118); g.lineTo(4, -118); g.closePath(); g.fill();
+      g.fillStyle = '#4c6038'; g.beginPath(); g.moveTo(-6, 0); g.lineTo(10, 0); g.lineTo(10, -118); g.lineTo(4, -118); g.closePath(); g.fill();
+      ell(g, 16, -118, 13, 7, '#1a1a1a');
+      if (t < 0.4) { g.fillStyle = '#c9cdd1'; g.fillRect(9, -128, 14, 10); g.fillStyle = '#1f58d6'; g.fillRect(9, -130, 14, 3); }
+      g.fillStyle = '#e8c21a'; g.fillRect(12, -70, 30, 4);
+      if (flash) drawFlash(g, 16, -128, 34, '#fff6b0', '#ff7a1a');
+      break;
+    }
+    case 5: { // disque dur à lancer
+      const s = t > 0 ? Math.sin(t * Math.PI) : 0;
+      g.translate(cx + 50 - s * 60, base - 20 - s * 70);
+      drawHand(g, 0, 0);
+      if (t === 0 || t < 0.2) {
+        g.save(); g.translate(0, -16); g.rotate(-0.2);
+        g.fillStyle = '#9aa1a8'; g.fillRect(-24, -34, 48, 34);
+        g.fillStyle = '#c9ced4'; g.fillRect(-24, -34, 48, 4);
+        ell(g, -4, -17, 12, 12, '#b4bac1'); ell(g, -4, -17, 3, 3, '#5a6068');
+        g.fillStyle = '#fff'; g.fillRect(10, -30, 12, 18); g.fillStyle = '#c21d1d'; g.fillRect(10, -30, 12, 4);
+        g.fillStyle = '#111'; g.font = 'bold 4px monospace'; g.fillText('4 To', 11, -18);
+        g.restore();
+      }
+      break;
+    }
+    case 6: { // compresseur ZIP
+      g.translate(cx, base + t * 10);
+      drawHand(g, -30, -20); drawHand(g, 30, -20);
+      g.fillStyle = '#4a34a8'; g.fillRect(-36, -80, 72, 80);
+      g.fillStyle = '#6a4ae0'; g.fillRect(-36, -80, 72, 6);
+      g.fillStyle = '#e8c21a'; g.fillRect(-6, -80, 12, 80);
+      for (let y = -76; y < 0; y += 5) { g.fillStyle = '#8a7a2a'; g.fillRect(-4, y, 8, 2); }
+      g.fillStyle = '#0a1a0a'; g.fillRect(12, -64, 20, 14);
+      g.fillStyle = '#3dff6a'; g.font = 'bold 6px monospace'; g.fillText('.ZIP', 13, -54);
+      ell(g, 0, -86, 10, 6, t > 0.5 ? '#fff' : '#b6a4ff');
+      if (t > 0.5) drawFlash(g, 0, -92, 22, '#ffffff', '#8a6aff');
+      break;
+    }
+    case 7: {
       g.translate(cx, base + t * 8);
       drawHand(g, -38, -22);
       drawHand(g, 38, -22);
@@ -962,38 +1278,30 @@ function drawWeapon(g) {
 
 /* ------------------------------------------------------------------- HUD */
 
+// Visage de l'admin façon Duke : brosse blonde, lunettes noires, sourire en coin.
 function drawFace(g, cx, cy) {
   const hp = INV.hp;
   const mood = P.dead ? 'dead' : P.faceMood;
-  ell(g, cx, cy + 2, 13, 15, hp > 60 ? '#e0b48a' : hp > 30 ? '#d8a27a' : '#c98f6a');
-  g.fillStyle = '#3b2716';
-  g.beginPath(); g.ellipse(cx, cy - 9, 14, 8, 0, Math.PI, 0); g.fill();
-  g.fillRect(cx - 14, cy - 9, 4, 8); g.fillRect(cx + 10, cy - 9, 4, 8);
-  // casque audio
-  g.strokeStyle = '#222'; g.lineWidth = 2; g.beginPath(); g.arc(cx, cy - 2, 16, Math.PI * 1.05, Math.PI * 1.95); g.stroke();
-  g.fillStyle = '#333'; g.fillRect(cx - 18, cy - 4, 5, 10); g.fillRect(cx + 13, cy - 4, 5, 10);
-  g.strokeStyle = '#333'; g.lineWidth = 1; g.beginPath(); g.moveTo(cx - 16, cy + 5); g.quadraticCurveTo(cx - 12, cy + 16, cx - 4, cy + 13); g.stroke();
-  // lunettes & yeux
-  const lk = P.look * 1.5;
-  g.fillStyle = god ? '#ffd700' : '#9ef';
-  g.fillRect(cx - 10, cy - 3, 8, 6); g.fillRect(cx + 2, cy - 3, 8, 6);
-  g.fillStyle = '#000';
+  g.fillStyle = hp > 60 ? '#e0a877' : hp > 30 ? '#d0966a' : '#c0845e';
+  g.fillRect(cx - 12, cy - 8, 24, 22);                        // mâchoire carrée
+  g.fillRect(cx - 10, cy + 14, 20, 3);
+  g.fillStyle = '#e8c23a'; g.fillRect(cx - 13, cy - 16, 26, 9); // brosse blonde
+  g.fillStyle = '#c9a020'; for (let x = cx - 12; x < cx + 13; x += 3) g.fillRect(x, cy - 16, 1, 8);
+  g.fillStyle = '#e8c23a'; g.fillRect(cx - 13, cy - 8, 3, 6); g.fillRect(cx + 10, cy - 8, 3, 6);
+  // lunettes noires
   if (mood === 'dead') {
-    g.font = '6px monospace'; g.fillText('x', cx - 8, cy + 2); g.fillText('x', cx + 4, cy + 2);
+    g.fillStyle = '#000'; g.font = '6px monospace'; g.fillText('x', cx - 8, cy + 1); g.fillText('x', cx + 3, cy + 1);
   } else {
-    g.fillRect(cx - 7 + lk, cy - 1, 2, 2); g.fillRect(cx + 5 + lk, cy - 1, 2, 2);
+    g.fillStyle = '#0a0a0a'; g.fillRect(cx - 12, cy - 5, 11, 6); g.fillRect(cx + 1, cy - 5, 11, 6); g.fillRect(cx - 1, cy - 4, 2, 2);
+    g.fillStyle = god ? '#ffd700' : 'rgba(120,180,255,0.6)'; g.fillRect(cx - 10 + P.look, cy - 4, 3, 1); g.fillRect(cx + 3 + P.look, cy - 4, 3, 1);
   }
-  g.strokeStyle = '#111'; g.lineWidth = 1; g.strokeRect(cx - 10, cy - 3, 8, 6); g.strokeRect(cx + 2, cy - 3, 8, 6);
-  g.beginPath(); g.moveTo(cx - 2, cy - 1); g.lineTo(cx + 2, cy - 1); g.stroke();
   // bouche
   g.fillStyle = '#5a1a1a';
   if (mood === 'ouch' || mood === 'dead') ell(g, cx, cy + 9, 3, 3, '#5a1a1a');
-  else if (mood === 'grin' || god) { g.beginPath(); g.arc(cx, cy + 6, 5, 0.2, Math.PI - 0.2); g.fill(); }
-  else if (hp < 40) g.fillRect(cx - 4, cy + 9, 8, 1);
-  else g.fillRect(cx - 4, cy + 8, 8, 2);
-  // blessures
-  if (hp < 60) { g.fillStyle = '#b01515'; g.fillRect(cx + 7, cy - 8, 2, 6); }
-  if (hp < 30) { g.fillRect(cx - 9, cy + 4, 2, 8); g.fillRect(cx + 3, cy + 10, 5, 2); }
+  else if (mood === 'grin' || god) { g.fillRect(cx - 6, cy + 7, 12, 3); g.fillStyle = '#fff'; g.fillRect(cx - 5, cy + 7, 10, 1); }
+  else { g.fillRect(cx - 2, cy + 9, 8, 2); g.fillRect(cx + 5, cy + 7, 2, 2); }  // sourire en coin
+  if (hp < 60) { g.fillStyle = '#b01515'; g.fillRect(cx + 7, cy + 2, 2, 6); }
+  if (hp < 30) { g.fillRect(cx - 9, cy + 4, 2, 8); g.fillRect(cx + 3, cy + 12, 5, 2); }
 }
 
 function drawHud(g) {
@@ -1010,11 +1318,10 @@ function drawHud(g) {
   const label = (txt, x) => { g.font = `5px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#9aa3ad'; g.fillText(txt, x, y + 35); };
   const w = WEAPONS[INV.cur];
   big(w.ammo ? String(INV.ammo[w.ammo]) : '--', 36, '#ff4d2e'); label('MUNITIONS', 36);
-  big(INV.hp + '%', 107, INV.hp > 30 ? '#ff4d2e' : '#ff1a1a'); label('SANTÉ', 107);
-  // armes
+  big(INV.hp + '%', 107, INV.hp > 30 ? '#ff4d2e' : '#ff1a1a'); label('EGO', 107);
   g.font = `7px ${FONT}`; g.textAlign = 'center';
-  for (let i = 0; i < 5; i++) {
-    const x = 156 + (i % 3) * 22, yy = y + 12 + ((i / 3) | 0) * 11;
+  for (let i = 0; i < 8; i++) {
+    const x = 153 + (i % 4) * 17, yy = y + 12 + ((i / 4) | 0) * 11;
     g.fillStyle = i === INV.cur ? '#ffe14a' : INV.weapons[i] ? '#d8dde3' : '#3a3f46';
     g.fillText(String(i + 1), x, yy + 4);
   }
@@ -1023,22 +1330,18 @@ function drawHud(g) {
   if (P.hurtT > 0) { g.fillStyle = 'rgba(255,0,0,0.25)'; g.fillRect(216, y + 3, 50, HUD_H - 4); }
   drawFace(g, 241, y + 20);
   big(INV.armor + '%', 301, '#4fb4ff'); label('ARMURE', 301);
-  // badges
   const badge = (on, col, yy) => { g.fillStyle = on ? col : '#2a2e34'; g.fillRect(347, y + yy, 14, 9); g.fillStyle = on ? '#eee' : '#1c1f24'; g.fillRect(349, y + yy + 5, 10, 2); };
   badge(L.keys.red, '#d42020', 7); badge(L.keys.blue, '#1f58d6', 20);
-  // munitions détaillées
   g.font = `5px ${FONT}`; g.textAlign = 'left';
-  const rows = [['PKT', 'bullets'], ['TRM', 'shells'], ['NRJ', 'cells']];
-  rows.forEach(([n, k], i) => {
-    const yy = y + 12 + i * 10;
+  AMMO_LABELS.forEach(([n, k], i) => {
+    const yy = y + 9 + i * 7;
     g.fillStyle = '#9aa3ad'; g.fillText(n, 380, yy);
-    g.fillStyle = w.ammo === k ? '#ffe14a' : '#e8c21a';
+    g.fillStyle = w.ammo === k ? '#ffe14a' : '#b8a040';
     g.textAlign = 'right'; g.fillText(`${INV.ammo[k]}/${AMMO_MAX[k]}`, 472, yy); g.textAlign = 'left';
   });
 }
 
 function drawOverlayText(g) {
-  // messages
   g.font = `6px ${FONT}`; g.textAlign = 'left';
   L.msgs.forEach((m, i) => {
     g.globalAlpha = Math.min(1, m.t);
@@ -1051,37 +1354,51 @@ function drawOverlayText(g) {
     g.font = `9px ${FONT}`; g.textAlign = 'center';
     g.fillStyle = '#000'; g.fillText(L.def.name, W / 2 + 1, 61);
     g.fillStyle = '#3dff6a'; g.fillText(L.def.name, W / 2, 60);
+    g.font = `5px ${FONT}`; g.fillStyle = '#9aa3ad';
+    g.fillText(`ÉPISODE ${L.def.episode + 1} : ${EPISODES[L.def.episode].name}`, W / 2, 72);
     g.globalAlpha = 1;
   }
-  // nom de l'arme
+  if (L.subtitle && L.subtitle.t > 0) {
+    g.globalAlpha = Math.min(1, L.subtitle.t);
+    g.font = `6px ${FONT}`; g.textAlign = 'center';
+    const tw = g.measureText(L.subtitle.text).width;
+    g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(W / 2 - tw / 2 - 4, VH - 30, tw + 8, 11);
+    g.fillStyle = '#fff'; g.fillText(L.subtitle.text, W / 2, VH - 22);
+    g.globalAlpha = 1;
+  }
   g.font = `5px ${FONT}`; g.textAlign = 'right';
   g.fillStyle = 'rgba(220,230,240,0.8)'; g.fillText(WEAPONS[INV.cur].name, W - 6, VH - 6);
-  if (god) { g.fillStyle = '#ffd700'; g.fillText('MODE ROOT', W - 6, 12); }
-  // boss
-  const boss = L.enemies.find((e) => e.type === 'boss' && e.state !== 'dead' && e.state !== 'dying' && e.state !== 'idle');
+  // compteur de migrations Nutanix
+  g.fillStyle = L.migrated === L.totalSpecials ? '#b6a4ff' : '#7855fa';
+  g.fillText(`NUTANIX ${L.migrated}/${L.totalSpecials}`, W - 6, 12);
+  if (god) { g.fillStyle = '#ffd700'; g.fillText('MODE ROOT', W - 6, 21); }
+  if (P.boostT > 0) { g.fillStyle = '#3dff6a'; g.fillText(`TURBO ${Math.ceil(P.boostT)}`, W - 6, god ? 30 : 21); }
+  const boss = L.enemies.find((e) => ETYPES[e.type].boss && alive(e) && e.state !== 'idle');
   if (boss) {
-    const f = Math.max(0, boss.hp / ETYPES.boss.hp);
+    const T = ETYPES[boss.type];
+    const f = Math.max(0, boss.hp / T.hp);
     g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(W / 2 - 101, 21, 202, 10);
     g.fillStyle = '#7a0f0f'; g.fillRect(W / 2 - 100, 22, 200, 8);
     g.fillStyle = '#ff2a2a'; g.fillRect(W / 2 - 100, 22, 200 * f, 8);
     g.font = `5px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#fff';
-    g.fillText('RANSOMWARE — CHIFFREMENT EN COURS', W / 2, 18);
+    g.fillText(`${T.name} — ${T.tag}`, W / 2, 18);
   }
 }
 
 function drawMap(g) {
   const cs = Math.min((W - 40) / L.w, (VH - 30) / L.h);
   const ox = (W - cs * L.w) / 2, oy = (VH - cs * L.h) / 2;
-  g.fillStyle = 'rgba(0,8,4,0.82)'; g.fillRect(0, 0, W, VH);
-  const col = { '#': '#6b7178', R: '#2e8b3d', S: '#2e6da6', N: '#8a6d1f', C: '#b8bcc0', W: '#c2a020', X: '#3dff6a', D: '#9aa3ad', '1': '#d42020', '2': '#1f58d6' };
+  g.fillStyle = 'rgba(0,8,4,0.85)'; g.fillRect(0, 0, W, VH);
+  const col = { '#': '#6b7178', '?': '#6b7178', R: '#2e8b3d', S: '#2e6da6', N: '#8a6d1f', C: '#b8bcc0', W: '#c2a020', X: '#3dff6a', D: '#9aa3ad', '1': '#d42020', '2': '#1f58d6',
+    '3': '#cc092f', '4': '#e57000', '5': '#2f9bff', '6': '#00a4ef', '7': '#7855fa' };
   for (let y = 0; y < L.h; y++) for (let x = 0; x < L.w; x++) {
-    const t = L.map[y * L.w + x];
-    if (!t) continue;
+    const i = y * L.w + x, t = L.map[i];
+    if (!t) { if (L.block[i]) { g.fillStyle = '#5a4a2a'; g.fillRect(ox + x * cs + cs * 0.2, oy + y * cs + cs * 0.2, cs * 0.6, cs * 0.6); } continue; }
     g.fillStyle = col[String.fromCharCode(t)] || '#666';
     g.fillRect(ox + x * cs, oy + y * cs, cs - 0.5, cs - 0.5);
   }
   for (const it of L.items) if (!it.taken) { g.fillStyle = '#ffe14a'; g.fillRect(ox + it.x * cs - 1, oy + it.y * cs - 1, 2, 2); }
-  for (const e of L.enemies) if (e.state !== 'dead' && e.state !== 'dying') { g.fillStyle = '#ff3b3b'; g.fillRect(ox + e.x * cs - 1.5, oy + e.y * cs - 1.5, 3, 3); }
+  for (const e of L.enemies) if (alive(e)) { g.fillStyle = '#ff3b3b'; g.fillRect(ox + e.x * cs - 1.5, oy + e.y * cs - 1.5, 3, 3); }
   const px = ox + P.x * cs, py = oy + P.y * cs;
   g.fillStyle = '#fff';
   g.beginPath();
@@ -1096,16 +1413,16 @@ function drawMap(g) {
 function present() {
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.imageSmoothingEnabled = false;
-  vctx.drawImage(scr, 0, 0, W * K, VH * K);
+  const sh = P.shake > 0 ? P.shake * 7 * K : 0;
+  if (sh) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, W * K, VH * K); }
+  vctx.drawImage(scr, sh ? rand(-sh, sh) : 0, sh ? rand(-sh, sh) : 0, W * K, VH * K);
   vctx.setTransform(K, 0, 0, K, 0, 0);
   const g = vctx;
   if (showMap) drawMap(g);
-  // voiles de couleur
   if (P.hurtT > 0) { g.fillStyle = `rgba(255,0,0,${P.hurtT * 0.8})`; g.fillRect(0, 0, W, VH); }
   if (P.pickT > 0) { g.fillStyle = `rgba(255,230,80,${P.pickT * 0.5})`; g.fillRect(0, 0, W, VH); }
   if (P.dead) { g.fillStyle = `rgba(120,0,0,${Math.min(0.6, P.deadT * 0.4)})`; g.fillRect(0, 0, W, VH); }
   if (P.hurtT > 0 && P.hurtDir) {
-    // indicateur de direction des dégâts
     g.save(); g.translate(W / 2, HORIZ); g.rotate(P.hurtDir);
     g.fillStyle = `rgba(255,40,40,${P.hurtT * 2})`;
     g.beginPath(); g.moveTo(60, -10); g.lineTo(74, 0); g.lineTo(60, 10); g.fill();
@@ -1121,6 +1438,7 @@ function updateMsgs(dt) {
   for (const m of L.msgs) m.t -= dt;
   L.msgs = L.msgs.filter((m) => m.t > 0);
   if (L.titleT > 0) L.titleT -= dt;
+  if (L.subtitle) L.subtitle.t -= dt;
 }
 
 function update(dt) {
@@ -1134,6 +1452,7 @@ function update(dt) {
   for (const e of L.enemies) updateEnemy(e, dt);
   separateEnemies();
   updateProjectiles(dt);
+  updateBarrels(dt);
   updateMsgs(dt);
   if (P.dead && P.deadT > 1.6 && state === 'playing') showDeath();
 }
@@ -1142,9 +1461,22 @@ let last = 0;
 function frame(ts) {
   const dt = Math.min(0.05, (ts - last) / 1000 || 0);
   last = ts;
-  if (state === 'playing' || state === 'dying') update(dt);
-  if (L && state !== 'title' && state !== 'loading') { render(); present(); }
+  if (state === 'playing') update(dt);
+  if (L && state !== 'title' && state !== 'loading' && state !== 'select') { render(); present(); }
   requestAnimationFrame(frame);
+}
+
+/* ---------------------------------------------------------- sauvegarde */
+
+const SAVE_KEY = 'dooooom.save';
+function readSave() {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || null; } catch (e) { return null; }
+}
+function writeSave(idx, inv) {
+  const s = readSave() || { maxLevel: 0 };
+  s.maxLevel = Math.max(s.maxLevel || 0, idx);
+  s.level = idx; s.inv = inv;
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch (e) { /* stockage indisponible */ }
 }
 
 /* --------------------------------------------------------------- écrans */
@@ -1157,7 +1489,7 @@ function showPanel(html, onGo) {
   overlay.classList.remove('hidden');
   const btn = panel.querySelector('[data-go]');
   if (btn) btn.onclick = (e) => { e.stopPropagation(); onGo(); };
-  panel.querySelectorAll('[data-act]').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); actions[b.dataset.act](); }; });
+  panel.querySelectorAll('[data-act]').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); actions[b.dataset.act](b.dataset.arg); }; });
 }
 
 function hidePanel() { overlay.classList.add('hidden'); }
@@ -1169,16 +1501,29 @@ const CONTROLS = `
     <tr><td>ZQSD / WASD / ↑↓</td><td>Se déplacer</td></tr>
     <tr><td>Souris / ← →</td><td>Tourner</td></tr>
     <tr><td>Clic / Ctrl</td><td>Tirer</td></tr>
-    <tr><td>E / Espace</td><td>Ouvrir / utiliser</td></tr>
-    <tr><td>1-5 / molette</td><td>Changer d'arme</td></tr>
+    <tr><td>E / Espace</td><td>Ouvrir, fouiller les murs, boire</td></tr>
+    <tr><td>1-8 / molette</td><td>Changer d'arme</td></tr>
     <tr><td>Maj</td><td>Courir</td></tr>
     <tr><td>Tab / M</td><td>Plan du datacenter</td></tr>
     <tr><td>Échap</td><td>Pause</td></tr>
-    <tr><td>N</td><td>Couper le son</td></tr>
+    <tr><td>N / V</td><td>Couper le son / la voix</td></tr>
   </table>`;
 
 const actions = {
   newGame() { Sfx.init(); INV = newInventory(); startLevel(0); },
+  continueGame() {
+    Sfx.init();
+    const s = readSave();
+    INV = s && s.inv ? cloneInv(s.inv) : defaultLoadout(s ? s.level : 0);
+    startLevel(s ? s.level : 0);
+  },
+  select() { showSelect(); },
+  play(arg) {
+    Sfx.init();
+    const idx = +arg, s = readSave();
+    INV = s && s.level === idx && s.inv ? cloneInv(s.inv) : defaultLoadout(idx);
+    startLevel(idx);
+  },
   resume() { resumeGame(); },
   restart() { INV = cloneInv(INV_START); startLevel(L.idx); },
   title() { showTitle(); },
@@ -1187,32 +1532,57 @@ const actions = {
 function showTitle() {
   state = 'title';
   document.exitPointerLock && document.exitPointerLock();
+  if (window.speechSynthesis) speechSynthesis.cancel();
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.fillStyle = '#000'; vctx.fillRect(0, 0, view.width, view.height);
+  const s = readSave();
+  const cont = s ? `<button data-act="continueGame" class="big">CONTINUER — ${getLevel(s.level).code}</button>` : '';
   showPanel(`
     <h1 class="logo">DOOOOOM</h1>
-    <h2>L'ENFER DU DATACENTER</h2>
-    <p class="story">Vous êtes l'ingénieur d'astreinte. Un ransomware s'est emparé du datacenter
-    et ses processus corrompus ont pris forme physique entre les baies.
-    Traversez les salles serveurs, récupérez les badges d'accès et atteignez
-    les terminaux de <b>REBOOT</b>.</p>
-    <button data-act="newGame" class="big">NOUVELLE PARTIE</button>
+    <h2>L'ADMIN EST DE RETOUR<br><span class="ok">ET IL N'A PAS EU SON CAFÉ</span></h2>
+    <p class="story">Un ransomware s'est emparé du datacenter et ses processus corrompus ont pris
+    forme physique entre les baies. Armé d'un pistolet à <b>écrous cagés</b>, de disques durs
+    et d'un ego surdimensionné, traversez <b>5 épisodes et 50 niveaux</b>, trouvez les zones secrètes
+    et migrez au clavier chaque rack ESXi, Proxmox, Vates et Hyper-V vers <b>Nutanix</b>.</p>
+    ${cont}
+    <button data-act="newGame" class="${s ? '' : 'big'}">NOUVELLE PARTIE</button>
+    <button data-act="select">CHOISIR UN NIVEAU</button>
     ${CONTROLS}
-    <p class="hint">Cliquez dans le jeu pour capturer la souris.</p>
+    <p class="hint">Cliquez dans le jeu pour capturer la souris. Codes : iddqd, idkfa.</p>
   `);
+}
+
+function showSelect() {
+  state = 'select';
+  const s = readSave();
+  const max = s ? s.maxLevel : 0;
+  let html = '<h2>CHOISIR UN NIVEAU</h2>';
+  EPISODES.forEach((ep, e) => {
+    html += `<h3>ÉPISODE ${e + 1} : ${ep.name}</h3><div class="grid">`;
+    for (let k = 0; k < 10; k++) {
+      const i = e * 10 + k;
+      const locked = i > max;
+      html += `<button ${locked ? 'disabled' : `data-act="play" data-arg="${i}"`} title="${locked ? 'Verrouillé' : LEVEL_NAMES[i]}" class="lvl${k === 9 ? ' boss' : ''}">${e + 1}-${k + 1}</button>`;
+    }
+    html += '</div>';
+  });
+  html += '<p class="hint">Les niveaux se débloquent en progressant.</p><button data-act="title">RETOUR</button>';
+  showPanel(html);
 }
 
 function startLevel(idx) {
   loadLevel(idx);
   INV_START = cloneInv(INV);
-  INV.cur = INV.weapons[INV.cur] ? INV.cur : 1;
+  writeSave(idx, INV_START);
+  if (!INV.weapons[INV.cur]) INV.cur = 1;
   state = 'briefing';
   render(); present();
   showPanel(`
-    <h2>${L.def.name}</h2>
+    <h2>${L.def.name}<br><span class="ep">ÉPISODE ${L.def.episode + 1} : ${EPISODES[L.def.episode].name}</span></h2>
     <p class="story">${L.def.intro}</p>
+    <p class="story small">Racks à migrer vers Nutanix : ${L.totalSpecials} — Zones secrètes : ${L.totalSecrets}</p>
     <button data-go class="big">ENTRER</button>
-  `, () => { hidePanel(); state = 'playing'; lockPointer(); });
+  `, () => { hidePanel(); state = 'playing'; lockPointer(); quip('start', 0.9, true); });
 }
 
 function pauseGame() {
@@ -1221,7 +1591,8 @@ function pauseGame() {
   firing = false;
   showPanel(`
     <h2>PAUSE</h2>
-    <p class="story">${L.def.name}<br>Ennemis ${L.kills}/${L.totalKills} — Objets ${L.itemsGot}/${L.totalItems} — ${fmtTime(L.time)}</p>
+    <p class="story">${L.def.name}<br>Ennemis ${L.kills}/${L.totalKills} — Objets ${L.itemsGot}/${L.totalItems} — Secrets ${L.secrets}/${L.totalSecrets}<br>
+    Migrations Nutanix ${L.migrated}/${L.totalSpecials} — ${fmtTime(L.time)}</p>
     <button data-act="resume" class="big">REPRENDRE</button>
     <button data-act="restart">RECOMMENCER LE NIVEAU</button>
     <button data-act="title">MENU PRINCIPAL</button>
@@ -1243,7 +1614,7 @@ function showDeath() {
   document.exitPointerLock && document.exitPointerLock();
   showPanel(`
     <h1 class="dead">SYSTÈME COMPROMIS</h1>
-    <p class="story">Kernel panic : l'ingénieur d'astreinte ne répond plus.<br>Ennemis ${L.kills}/${L.totalKills} — ${fmtTime(L.time)}</p>
+    <p class="story">Kernel panic : l'admin d'astreinte ne répond plus.<br>Ennemis ${L.kills}/${L.totalKills} — ${fmtTime(L.time)}</p>
     <button data-act="restart" class="big">RESTAURER LE SNAPSHOT</button>
     <button data-act="title">MENU PRINCIPAL</button>
   `);
@@ -1251,31 +1622,41 @@ function showDeath() {
 
 function completeLevel() {
   Sfx.exit();
+  quip('exit', 0.7, true);
   state = 'intermission';
   firing = false;
   document.exitPointerLock && document.exitPointerLock();
-  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '100%';
-  const lastLevel = L.idx === LEVELS.length - 1;
+  const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+  const lastLevel = L.idx === LEVEL_COUNT - 1;
+  if (!lastLevel) {
+    const next = cloneInv(INV);
+    next.hp = Math.max(next.hp, 1);
+    writeSave(L.idx + 1, next);
+  }
   const stats = `
     <table class="stats">
       <tr><td>ENNEMIS</td><td>${pct(L.kills, L.totalKills)}</td></tr>
       <tr><td>OBJETS</td><td>${pct(L.itemsGot, L.totalItems)}</td></tr>
+      <tr><td>SECRETS</td><td>${pct(L.secrets, L.totalSecrets)}</td></tr>
+      <tr><td>MIGRATIONS NUTANIX</td><td>${L.migrated}/${L.totalSpecials}</td></tr>
       <tr><td>TEMPS</td><td>${fmtTime(L.time)}</td></tr>
     </table>`;
   if (lastLevel) {
     showPanel(`
       <h1 class="logo">REBOOT RÉUSSI</h1>
       <h2>LE DATACENTER EST SAUVÉ</h2>
-      <p class="story">Le ransomware est purgé, les baies redémarrent une à une.
-      Les LEDs repassent au vert. Il est 6h47. Quelqu'un devra quand même
-      écrire le post-mortem...</p>
+      <p class="story">Le ransomware est purgé, les baies redémarrent une à une et les LEDs repassent au vert.
+      Il est 6h47. L'admin allume une cigarette électronique, remet ses lunettes de soleil et
+      laisse à quelqu'un d'autre le soin d'écrire le post-mortem.</p>
       ${stats}
       <button data-act="title" class="big">MENU PRINCIPAL</button>
     `);
     return;
   }
+  const epDone = L.idx % 10 === 9;
   showPanel(`
     <h2>${L.def.name}<br><span class="ok">— REBOOTÉ —</span></h2>
+    ${epDone ? `<p class="story"><b>ÉPISODE ${L.def.episode + 1} TERMINÉ !</b> Direction : ${EPISODES[L.def.episode + 1].name}.</p>` : ''}
     ${stats}
     <button data-go class="big">SALLE SUIVANTE</button>
   `, () => {
@@ -1297,7 +1678,7 @@ function onCheat(k) {
   cheatBuf = (cheatBuf + k.toLowerCase()).slice(-8);
   if (cheatBuf.endsWith('iddqd')) { god = !god; msg(god ? 'MODE ROOT activé (sudo su)' : 'MODE ROOT désactivé'); }
   if (cheatBuf.endsWith('idkfa')) {
-    INV.weapons = [true, true, true, true, true];
+    INV.weapons = INV.weapons.map(() => true);
     INV.ammo = { ...AMMO_MAX }; INV.armor = 200;
     L.keys.red = L.keys.blue = true;
     msg('Arsenal complet + tous les badges');
@@ -1315,11 +1696,17 @@ window.addEventListener('keydown', (e) => {
   if (e.key && e.key.length === 1) onCheat(e.key);
   if (P.dead) return;
   if (e.code === 'KeyE' || e.code === 'Space') useAction();
-  if (e.code.startsWith('Digit')) { const n = +e.code.slice(5) - 1; if (n >= 0 && n < 5) switchWeapon(n); }
+  if (e.code.startsWith('Digit')) { const n = +e.code.slice(5) - 1; if (n >= 0 && n < 8) switchWeapon(n); }
   if (e.code === 'Tab' || e.key === 'm' || e.key === 'M') showMap = !showMap;
   if (e.code === 'Escape' || e.code === 'KeyP') pauseGame();
   if (e.code === 'ControlLeft' || e.code === 'ControlRight') firing = true;
   if (e.key === 'n' || e.key === 'N') msg(Sfx.toggleMute() ? 'Son coupé' : 'Son activé');
+  if (e.key === 'v' || e.key === 'V') {
+    voiceOn = !voiceOn;
+    if (!voiceOn && window.speechSynthesis) speechSynthesis.cancel();
+    try { localStorage.setItem('dooooom.voice', voiceOn ? '1' : '0'); } catch (err) { /* ignoré */ }
+    msg(voiceOn ? "Voix de l'admin activée" : "Voix de l'admin coupée (sous-titres conservés)");
+  }
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
@@ -1347,7 +1734,7 @@ view.addEventListener('wheel', (e) => {
   e.preventDefault();
   const dir = e.deltaY > 0 ? 1 : -1;
   let i = INV.cur;
-  for (let k = 0; k < 5; k++) { i = (i + dir + 5) % 5; if (INV.weapons[i]) { switchWeapon(i); break; } }
+  for (let k = 0; k < 8; k++) { i = (i + dir + 8) % 8; if (INV.weapons[i]) { switchWeapon(i); break; } }
 }, { passive: false });
 view.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -1361,7 +1748,10 @@ document.addEventListener('pointerlockchange', () => {
 
 function boot() {
   resize();
-  try { const s = localStorage.getItem('dooooom.sens'); if (s) sensitivity = +s; } catch (e) { /* ignoré */ }
+  try {
+    const s = localStorage.getItem('dooooom.sens'); if (s) sensitivity = +s;
+    if (localStorage.getItem('dooooom.voice') === '0') voiceOn = false;
+  } catch (e) { /* ignoré */ }
   buildAssets();
   showTitle();
   requestAnimationFrame(frame);
