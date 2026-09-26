@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.jpg" alt="Duke Nutanix — the admin is back" width="100%">
+  <img src="docs/banner.jpg" alt="Duke Nutanix — Admin is back" width="100%">
 </p>
 
 # DUKE NUTANIX — The admin is back
