@@ -1,7 +1,7 @@
 'use strict';
 /*
- * DUKE NUTANIX — moteur de raycasting, esprit Duke Nukem, dans les datacenters.
- * Rendu logiciel dans un buffer 480x230 (vue 3D) + HUD en haute résolution.
+ * DUKE NUTANIX — raycasting engine, Duke Nukem spirit, set in datacenters.
+ * Software rendering into a 480x230 buffer (3D view) + high-resolution HUD.
  */
 
 const W = 480, H = 270, HUD_H = 40, VH = H - HUD_H, HORIZ = VH / 2;
@@ -10,67 +10,67 @@ const FONT = '"Press Start 2P", monospace';
 const WALL_CHARS = '#RSNCWXD12?34567';
 const SPECIAL_NAMES = { '3': 'Broadcom ESXi', '4': 'Proxmox', '5': 'Vates XCP-ng', '6': 'Hyper-V' };
 
-/* ------------------------------------------------------------ définitions */
+/* ------------------------------------------------------------ definitions */
 
 const WEAPONS = [
-  { name: 'CLAVIER MÉCA', ammo: null, rate: 0.5, anim: 0.45, dmg: [20, 34], melee: true, range: 1.5 },
-  { name: 'PISTOLET À ÉCROUS CAGÉS', ammo: 'nuts', rate: 0.3, anim: 0.25, dmg: [12, 18], proj: 'nut', speed: 19, spread: 0.01, sfx: 'nutgun' },
-  { name: 'FUSIL À PAQUETS', ammo: 'shells', rate: 0.9, anim: 0.8, dmg: [7, 12], pellets: 8, spread: 0.085, sfx: 'shotgun' },
-  { name: 'RIVETEUSE GATLING', ammo: 'nuts', rate: 0.085, anim: 0.08, dmg: [9, 14], proj: 'nut', speed: 21, spread: 0.04, sfx: 'rivet' },
-  { name: 'BAZOOKA SFP', ammo: 'sfp', rate: 0.85, anim: 0.5, dmg: [110, 110], proj: 'sfp', speed: 13, spread: 0, sfx: 'rocket' },
-  { name: 'DISQUES DURS', ammo: 'hdd', rate: 0.75, anim: 0.5, dmg: [130, 130], proj: 'hdd', speed: 9, spread: 0, sfx: 'throw' },
-  { name: 'COMPRESSEUR ZIP', ammo: 'cells', use: 4, rate: 0.6, anim: 0.3, dmg: [0, 0], proj: 'zip', speed: 16, spread: 0, sfx: 'shrink' },
-  { name: 'CANON OVERCLOCK', ammo: 'cells', rate: 0.11, anim: 0.1, dmg: [18, 26], proj: 'plasma', speed: 15, spread: 0, sfx: 'plasma' },
+  { name: 'MECH KEYBOARD', ammo: null, rate: 0.5, anim: 0.45, dmg: [20, 34], melee: true, range: 1.5 },
+  { name: 'CAGE NUT PISTOL', ammo: 'nuts', rate: 0.3, anim: 0.25, dmg: [12, 18], proj: 'nut', speed: 19, spread: 0.01, sfx: 'nutgun' },
+  { name: 'PACKET SHOTGUN', ammo: 'shells', rate: 0.9, anim: 0.8, dmg: [7, 12], pellets: 8, spread: 0.085, sfx: 'shotgun' },
+  { name: 'GATLING RIVETER', ammo: 'nuts', rate: 0.085, anim: 0.08, dmg: [9, 14], proj: 'nut', speed: 21, spread: 0.04, sfx: 'rivet' },
+  { name: 'SFP BAZOOKA', ammo: 'sfp', rate: 0.85, anim: 0.5, dmg: [110, 110], proj: 'sfp', speed: 13, spread: 0, sfx: 'rocket' },
+  { name: 'HARD DRIVES', ammo: 'hdd', rate: 0.75, anim: 0.5, dmg: [130, 130], proj: 'hdd', speed: 9, spread: 0, sfx: 'throw' },
+  { name: 'ZIP COMPRESSOR', ammo: 'cells', use: 4, rate: 0.6, anim: 0.3, dmg: [0, 0], proj: 'zip', speed: 16, spread: 0, sfx: 'shrink' },
+  { name: 'OVERCLOCK CANNON', ammo: 'cells', rate: 0.11, anim: 0.1, dmg: [18, 26], proj: 'plasma', speed: 15, spread: 0, sfx: 'plasma' },
 ];
 const AMMO_MAX = { nuts: 250, shells: 50, sfp: 30, hdd: 20, cells: 300 };
-const AMMO_LABELS = [['ÉCR', 'nuts'], ['TRM', 'shells'], ['SFP', 'sfp'], ['HDD', 'hdd'], ['NRJ', 'cells']];
+const AMMO_LABELS = [['NUT', 'nuts'], ['FRM', 'shells'], ['SFP', 'sfp'], ['HDD', 'hdd'], ['NRG', 'cells']];
 const WEAPON_SLOT = { F: 2, M: 3, K: 4, G: 5, Y: 6, L: 7 };
 
 const BOSS_BASE = { speed: 1.0, radius: 0.7, scale: 1.9, z: 0, atkRange: 18, cd: 1.5, sight: 30, pain: 0.04, shotZ: 0.9, boss: true };
 const ETYPES = {
   bug: { name: 'Bug', hp: 35, speed: 2.2, radius: 0.3, scale: 0.7, z: 0, melee: true, dmg: [5, 11], atkRange: 1.0, cd: 0.9, sight: 16, pain: 0.7 },
-  drone: { name: 'Drone viral', hp: 50, speed: 1.6, radius: 0.3, scale: 0.6, z: 0.35, dmg: [8, 14], atkRange: 11, cd: 1.9, sight: 18, pain: 0.5, shotZ: 0.62, shot: 'orb' },
-  bot: { name: 'Bot BSOD', hp: 85, speed: 1.2, radius: 0.32, scale: 1.0, z: 0, dmg: [5, 9], atkRange: 13, cd: 2.4, sight: 18, pain: 0.35, burst: 3, shotZ: 0.55, shot: 'bolt' },
-  troll: { name: 'Troll de forum', hp: 170, speed: 1.6, radius: 0.4, scale: 1.15, z: 0, melee: true, dmg: [14, 24], atkRange: 1.2, cd: 1.2, sight: 16, pain: 0.2 },
-  spam: { name: 'Spammeur', hp: 60, speed: 1.3, radius: 0.32, scale: 0.8, z: 0, dmg: [4, 7], atkRange: 10, cd: 2.2, sight: 16, pain: 0.5, shotZ: 0.45, shot: 'bolt', fan: 3 },
-  botnet: { ...BOSS_BASE, name: 'BOTNET', tag: 'ZOMBIFICATION EN COURS', hp: 900, dmg: [7, 12], shot: 'botnet', minion: 'bug' },
-  miner: { ...BOSS_BASE, name: 'CRYPTOMINEUR', tag: 'MINAGE EN COURS', hp: 1100, dmg: [8, 13], shot: 'miner', minion: 'drone' },
-  rootkit: { ...BOSS_BASE, name: 'ROOTKIT', tag: 'ESCALADE DE PRIVILÈGES', hp: 1300, dmg: [9, 14], shot: 'boss', minion: 'spam' },
-  zeroday: { ...BOSS_BASE, name: 'ZERO-DAY', tag: 'EXPLOITATION EN COURS', hp: 1500, speed: 1.2, dmg: [9, 15], shot: 'zeroday', minion: 'bot' },
-  ransomware: { ...BOSS_BASE, name: 'RANSOMWARE', tag: 'CHIFFREMENT EN COURS', hp: 2200, dmg: [10, 16], shot: 'boss', minion: 'bug' },
+  drone: { name: 'Viral drone', hp: 50, speed: 1.6, radius: 0.3, scale: 0.6, z: 0.35, dmg: [8, 14], atkRange: 11, cd: 1.9, sight: 18, pain: 0.5, shotZ: 0.62, shot: 'orb' },
+  bot: { name: 'BSOD bot', hp: 85, speed: 1.2, radius: 0.32, scale: 1.0, z: 0, dmg: [5, 9], atkRange: 13, cd: 2.4, sight: 18, pain: 0.35, burst: 3, shotZ: 0.55, shot: 'bolt' },
+  troll: { name: 'Forum troll', hp: 170, speed: 1.6, radius: 0.4, scale: 1.15, z: 0, melee: true, dmg: [14, 24], atkRange: 1.2, cd: 1.2, sight: 16, pain: 0.2 },
+  spam: { name: 'Spammer', hp: 60, speed: 1.3, radius: 0.32, scale: 0.8, z: 0, dmg: [4, 7], atkRange: 10, cd: 2.2, sight: 16, pain: 0.5, shotZ: 0.45, shot: 'bolt', fan: 3 },
+  botnet: { ...BOSS_BASE, name: 'BOTNET', tag: 'ZOMBIFICATION IN PROGRESS', hp: 900, dmg: [7, 12], shot: 'botnet', minion: 'bug' },
+  miner: { ...BOSS_BASE, name: 'CRYPTOMINER', tag: 'MINING IN PROGRESS', hp: 1100, dmg: [8, 13], shot: 'miner', minion: 'drone' },
+  rootkit: { ...BOSS_BASE, name: 'ROOTKIT', tag: 'PRIVILEGE ESCALATION', hp: 1300, dmg: [9, 14], shot: 'boss', minion: 'spam' },
+  zeroday: { ...BOSS_BASE, name: 'ZERO-DAY', tag: 'EXPLOIT IN PROGRESS', hp: 1500, speed: 1.2, dmg: [9, 15], shot: 'zeroday', minion: 'bot' },
+  ransomware: { ...BOSS_BASE, name: 'RANSOMWARE', tag: 'ENCRYPTION IN PROGRESS', hp: 2200, dmg: [10, 16], shot: 'boss', minion: 'bug' },
 };
 const ENEMY_CHARS = { b: 'bug', d: 'drone', o: 'bot', t: 'troll', m: 'spam' };
 const ITEM_CHARS = '+HAascrukgjFMKGYL';
 const DECOR_CHARS = 'xef';
 
-/* --------------------------------------------------------------- répliques */
+/* ----------------------------------------------------------- one-liners */
 
 const QUIPS = {
-  start: ["L'admin est dans la place. Et il n'a pas eu son café.", 'Qui a encore touché à la prod ?',
-    "Je suis venu rebooter des serveurs et botter des culs. Et j'ai presque fini de rebooter.",
-    'Personne ne ferme mon ticket à ma place.', 'Allez. Fenêtre de maintenance ouverte... sur vos têtes.'],
-  kill: ['Ctrl Alt Suppr, bébé !', 'Retourne dans slash dev slash null.', 'Kernel panic ? Pas chez moi.', 'Bug corrigé. En prod. Comme toujours.',
-    'Ticket clôturé.', 'Garbage collected !', 'Erreur 404 : ennemi introuvable.', "Ça, c'est du hotfix.", "Tu n'étais pas dans le SLA.", 'Segfault, mon gars.'],
-  weapon: ['Viens voir papa.', "Ooh, ça c'est du matos de prod.", 'Enfin un outil digne de moi.', 'Ça va chiffrer... mais pas pour eux.'],
-  secret: ['Une zone secrète ! Personne ne cache rien à l\'admin.', "Tiens, un placard qui n'était pas dans le plan de câblage."],
-  stomp: ['Écrasé comme un vieux ticket Jira.', 'Compressé, écrasé, archivé.', 'Taille du fichier : zéro octet.'],
-  nutanix: ['Encore un cluster migré sur Nutanix.', 'Un coup de clavier, une migration.', 'Hyperconvergé, bébé !', 'Et hop, un de plus dans Prism.'],
-  nutanixAll: ["Datacenter cent pour cent Nutanix. Ça, c'est de l'infra !"],
-  hurt: ["J'ai connu des migrations plus douces.", 'Aïe. Faudra ouvrir un ticket.', 'Je saigne en RAID zéro.'],
-  boss: ['Toi, je vais te désinstaller.', 'Pas de rançon pour toi, mon grand.', 'Enfin un adversaire à ma taille.'],
-  bossKill: ['Ton chiffrement, tu peux te le garder.', 'Et voilà. Restauration terminée.', 'Désinstallé. Sans redémarrage.'],
-  fountain: ["Ahhh. L'eau de la clim, rien de tel.", "Ça hydrate l'ego."],
-  drink: ['Turbo activé !', 'Vingt-quatre heures sans dormir, pas de souci.'],
-  barrel: ['Boum ! Onduleur déchargé.', 'Coupure de courant... pour vous.'],
-  exit: ['Reboot lancé. Au suivant.', 'Le datacenter vous dit merci. De rien.'],
+  start: ["The admin has entered the building. And he hasn't had his coffee.", 'Who touched prod again?',
+    "I came here to reboot servers and kick ass. And I'm almost done rebooting.",
+    'Nobody closes my ticket but me.', "Alright. Maintenance window's open... on your heads."],
+  kill: ['Ctrl Alt Delete, baby!', 'Back to slash dev slash null.', 'Kernel panic? Not on my watch.', 'Bug fixed. In prod. As usual.',
+    'Ticket closed.', 'Garbage collected!', 'Error 404: enemy not found.', "Now that's a hotfix.", "You weren't in the SLA.", 'Segfault, pal.'],
+  weapon: ['Come to daddy.', 'Ooh, production-grade hardware.', 'Finally, a tool worthy of me.', "Somebody's getting encrypted... and it ain't me."],
+  secret: ['A secret area! Nobody hides anything from the admin.', "Huh, a closet that wasn't on the cabling plan."],
+  stomp: ['Squashed like an old Jira ticket.', 'Compressed, crushed, archived.', 'File size: zero bytes.'],
+  nutanix: ['Another cluster migrated to Nutanix.', 'One keystroke, one migration.', 'Hyperconverged, baby!', 'And boom, one more in Prism.'],
+  nutanixAll: ["One hundred percent Nutanix datacenter. Now that's infrastructure!"],
+  hurt: ["I've had smoother migrations.", 'Ouch. Gonna need a ticket for that.', "I'm bleeding in RAID zero."],
+  boss: ["I'm gonna uninstall you.", 'No ransom for you, big guy.', 'Finally, someone my size.'],
+  bossKill: ['Keep your encryption.', 'There. Restore complete.', 'Uninstalled. No reboot required.'],
+  fountain: ['Ahhh. Nothing beats AC water.', 'Keeps the ego hydrated.'],
+  drink: ['Turbo engaged!', 'Twenty-four hours without sleep, no problem.'],
+  barrel: ['Boom! UPS discharged.', 'Power outage... for you.'],
+  exit: ['Reboot started. Next!', "The datacenter says thanks. You're welcome."],
 };
 let voiceOn = true;
 let lastQuip = -99;
-let frenchVoice = null;
+let adminVoice = null;
 function pickVoice() {
   if (!window.speechSynthesis) return;
-  const v = speechSynthesis.getVoices().filter((x) => x.lang && x.lang.toLowerCase().startsWith('fr'));
-  frenchVoice = v.find((x) => /thomas|paul|henri|male|homme/i.test(x.name)) || v[0] || null;
+  const v = speechSynthesis.getVoices().filter((x) => x.lang && x.lang.toLowerCase().startsWith('en'));
+  adminVoice = v.find((x) => /david|daniel|alex|fred|guy|male/i.test(x.name) && !/female/i.test(x.name)) || v[0] || null;
 }
 if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
 
@@ -85,10 +85,10 @@ function quip(kind, chance = 1, force = false) {
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'fr-FR'; u.pitch = 0.35; u.rate = 1.05; u.volume = 0.9;
-      if (frenchVoice) u.voice = frenchVoice;
+      u.lang = 'en-US'; u.pitch = 0.35; u.rate = 1.05; u.volume = 0.9;
+      if (adminVoice) u.voice = adminVoice;
       speechSynthesis.speak(u);
-    } catch (e) { /* synthèse vocale indisponible */ }
+    } catch (e) { /* speech synthesis unavailable */ }
   }
 }
 
@@ -116,12 +116,12 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 
-/* ------------------------------------------------------------------ état */
+/* ----------------------------------------------------------------- state */
 
 let state = 'loading';
-let L = null;            // niveau courant
-let INV = null;          // inventaire persistant entre niveaux
-let INV_START = null;    // inventaire au début du niveau (pour recommencer)
+let L = null;            // current level
+let INV = null;          // inventory carried between levels
+let INV_START = null;    // inventory at level start (for restarts)
 let god = false;
 let animFrame = 0, animClock = 0;
 const P = { x: 0, y: 0, a: 0 };
@@ -129,7 +129,7 @@ const P = { x: 0, y: 0, a: 0 };
 function newInventory() {
   return { hp: 100, armor: 0, ammo: { nuts: 60, shells: 0, sfp: 0, hdd: 0, cells: 0 }, weapons: [true, true, false, false, false, false, false, false], cur: 1 };
 }
-// Équipement de départ quand on commence directement à un niveau avancé.
+// Starting loadout when jumping straight into a later level.
 function defaultLoadout(idx) {
   const inv = newInventory();
   for (const [ch, first] of Object.entries(WEAPON_FIRST_LEVEL)) if (first < idx) inv.weapons[WEAPON_SLOT[ch]] = true;
@@ -143,7 +143,7 @@ const cloneInv = (i) => JSON.parse(JSON.stringify(i));
 const rand = (a, b) => a + Math.random() * (b - a);
 const randi = (a, b) => Math.floor(rand(a, b + 1));
 const alive = (e) => e.state !== 'dead' && e.state !== 'dying';
-// famille de sons d'un ennemi
+// sound family of an enemy
 const sndKind = (e) => (ETYPES[e.type].boss ? 'boss' : e.type === 'troll' ? 'bug' : e.type === 'spam' ? 'bot' : e.type);
 
 function loadLevel(idx) {
@@ -182,7 +182,7 @@ function loadLevel(idx) {
     else if (c === 'B') { L.barrels.push({ x: x + 0.5, y: y + 0.5, hp: 25, fuse: -1, dead: false }); L.block[i] = 1; }
     else if (DECOR_CHARS.includes(c)) { L.decor.push({ x: x + 0.5, y: y + 0.5, type: c, uses: 0 }); if (c === 'x') L.block[i] = 1; }
   }
-  // dalles perforées devant les baies (allées froides)
+  // perforated tiles in front of racks (cold aisles)
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
     if (L.map[y * w + x]) continue;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -216,8 +216,8 @@ function spawnEnemy(type, x, y) {
 
 const RH = { d: 0, side: 0, mx: 0, my: 0, wx: 0, tile: 0 };
 
-// DDA avec portes coulissantes au milieu de la case. Si (rdx, rdy) est
-// normalisé, RH.d est la distance euclidienne ; sinon la distance perpendiculaire.
+// DDA with sliding doors in the middle of the cell. If (rdx, rdy) is
+// normalized, RH.d is the Euclidean distance; otherwise the perpendicular distance.
 function castRay(px, py, rdx, rdy) {
   const w = L.w, h = L.h, map = L.map;
   let mx = px | 0, my = py | 0;
@@ -241,7 +241,7 @@ function castRay(px, py, rdx, rdy) {
       RH.d = d; RH.side = side; RH.mx = mx; RH.my = my; RH.wx = f - door.open; RH.tile = t;
       return RH;
     }
-    // un passage secret recule dans le mur comme dans Wolfenstein
+    // a secret passage slides back into the wall, Wolfenstein-style
     let d = side === 0 ? sdx - ddx : sdy - ddy;
     if (door && door.secret) {
       if (door.open >= 1) continue;
@@ -302,7 +302,7 @@ function hitsEnemy(x, y, r) {
   return false;
 }
 
-/* ----------------------------------------------------------------- portes */
+/* ----------------------------------------------------------------- doors */
 
 function openDoor(d) {
   if (d.st === 'closed' || d.st === 'closing') {
@@ -341,7 +341,7 @@ function msg(text) {
   if (L.msgs.length > 4) L.msgs.shift();
 }
 
-/* ------------------------------------------------------------------ joueur */
+/* ---------------------------------------------------------------- player */
 
 const keys = {};
 let mouseDX = 0, firing = false, showMap = false;
@@ -349,15 +349,15 @@ let sensitivity = 1;
 
 function useAction() {
   const dx = Math.cos(P.a), dy = Math.sin(P.a);
-  // fontaine à eau devant soi
+  // water cooler in front of the player
   for (const f of L.decor) {
     if (f.type !== 'f') continue;
     const fx = f.x - P.x, fy = f.y - P.y, d = Math.hypot(fx, fy);
     if (d < 1.4 && (fx * dx + fy * dy) / d > 0.7) {
-      if (INV.hp >= 100) { msg("Vous n'avez pas soif. Votre ego non plus."); return; }
-      if (f.uses >= 6) { msg('La fontaine est vide.'); return; }
+      if (INV.hp >= 100) { msg("You're not thirsty. Neither is your ego."); return; }
+      if (f.uses >= 6) { msg('The water cooler is empty.'); return; }
       f.uses++; INV.hp = Math.min(100, INV.hp + 5);
-      Sfx.slurp(); msg("Glou glou... +5 d'ego"); quip('fountain', 0.4);
+      Sfx.slurp(); msg('Glug glug... +5 ego'); quip('fountain', 0.4);
       return;
     }
   }
@@ -370,20 +370,20 @@ function useAction() {
       if (d.st === 'open' || d.st === 'opening') { if (d.st === 'open') d.timer = 4; return; }
       if (d.lock && !L.keys[d.lock]) {
         Sfx.deny();
-        msg(d.lock === 'red' ? 'Accès refusé : BADGE ROUGE requis' : 'Accès refusé : BADGE BLEU requis');
+        msg(d.lock === 'red' ? 'Access denied: RED BADGE required' : 'Access denied: BLUE BADGE required');
         return;
       }
       if (d.secret) {
         L.secrets++;
         Sfx.secret();
-        msg('Zone secrète découverte !');
+        msg('Secret area found!');
         quip('secret', 1, true);
       }
       openDoor(d);
       return;
     }
     if (String.fromCharCode(t) === 'X') {
-      if (L.bossAlive) { Sfx.deny(); msg('Le système est verrouillé ! Détruisez le boss.'); return; }
+      if (L.bossAlive) { Sfx.deny(); msg('The system is locked! Destroy the boss.'); return; }
       completeLevel();
       return;
     }
@@ -425,12 +425,12 @@ function updatePlayer(dt) {
     P.bobAmt = Math.min(1, P.bobAmt + dt * 4);
   } else P.bobAmt = Math.max(0, P.bobAmt - dt * 4);
 
-  // écrasement des ennemis compressés
+  // stomping compressed enemies
   for (const e of L.enemies) {
     if (!alive(e) || e.shrunk <= 0) continue;
     if ((e.x - P.x) ** 2 + (e.y - P.y) ** 2 < 0.45 * 0.45) {
       e.hp = 0; killEnemy(e, 'stomp');
-      Sfx.squish(); msg('SPLAT !'); quip('stomp', 0.8, true);
+      Sfx.squish(); msg('SPLAT!'); quip('stomp', 0.8, true);
     }
   }
 
@@ -471,25 +471,25 @@ function pickup(it) {
   };
   let ok = true, text = '';
   switch (it.type) {
-    case '+': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 10); text = "Café serré : +10 d'ego"; break;
-    case 'H': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 25); text = "Kit de secours : +25 d'ego"; break;
-    case 'A': if (INV.armor >= 100) return false; INV.armor = 100; text = 'Firewall activé : armure 100%'; break;
-    case 'j': P.boostT = 15; text = 'Boisson énergisante : TURBO pendant 15 s !'; quip('drink', 0.7); break;
-    case 'a': ok = add('nuts', it.drop ? 10 : 30); text = 'Écrous cagés M6'; break;
-    case 's': ok = add('shells', 8); text = 'Trames jumbo (+8)'; break;
-    case 'k': ok = add('sfp', 4); text = 'Modules SFP+ (+4 roquettes)'; break;
+    case '+': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 10); text = 'Espresso: +10 ego'; break;
+    case 'H': if (INV.hp >= 100) return false; INV.hp = Math.min(100, INV.hp + 25); text = 'Medkit: +25 ego'; break;
+    case 'A': if (INV.armor >= 100) return false; INV.armor = 100; text = 'Firewall enabled: 100% armor'; break;
+    case 'j': P.boostT = 15; text = 'Energy drink: TURBO for 15 s!'; quip('drink', 0.7); break;
+    case 'a': ok = add('nuts', it.drop ? 10 : 30); text = 'M6 cage nuts'; break;
+    case 's': ok = add('shells', 8); text = 'Jumbo frames (+8)'; break;
+    case 'k': ok = add('sfp', 4); text = 'SFP+ modules (+4 rockets)'; break;
     case 'g':
-      if (!INV.weapons[5]) return giveWeapon('G', 'hdd', 2, 'DISQUES DURS récupérés ! [6]');
-      ok = add('hdd', 2); text = 'Disques durs (+2)'; break;
-    case 'c': ok = add('cells', 40); text = "Cellules d'énergie (+40)"; break;
-    case 'r': L.keys.red = true; msg("Badge d'accès ROUGE récupéré"); Sfx.key(); P.pickT = 0.3; return true;
-    case 'u': L.keys.blue = true; msg("Badge d'accès BLEU récupéré"); Sfx.key(); P.pickT = 0.3; return true;
-    case 'F': return giveWeapon('F', 'shells', 8, 'FUSIL À PAQUETS récupéré ! [3]');
-    case 'M': return giveWeapon('M', 'nuts', 60, 'RIVETEUSE GATLING récupérée ! [4]');
-    case 'K': return giveWeapon('K', 'sfp', 5, 'BAZOOKA SFP récupéré ! [5]');
-    case 'G': return giveWeapon('G', 'hdd', 5, 'DISQUES DURS récupérés ! [6]');
-    case 'Y': return giveWeapon('Y', 'cells', 40, 'COMPRESSEUR ZIP récupéré ! [7]');
-    case 'L': return giveWeapon('L', 'cells', 60, 'CANON OVERCLOCK récupéré ! [8]');
+      if (!INV.weapons[5]) return giveWeapon('G', 'hdd', 2, 'HARD DRIVES picked up! [6]');
+      ok = add('hdd', 2); text = 'Hard drives (+2)'; break;
+    case 'c': ok = add('cells', 40); text = 'Energy cells (+40)'; break;
+    case 'r': L.keys.red = true; msg('RED access badge picked up'); Sfx.key(); P.pickT = 0.3; return true;
+    case 'u': L.keys.blue = true; msg('BLUE access badge picked up'); Sfx.key(); P.pickT = 0.3; return true;
+    case 'F': return giveWeapon('F', 'shells', 8, 'PACKET SHOTGUN picked up! [3]');
+    case 'M': return giveWeapon('M', 'nuts', 60, 'GATLING RIVETER picked up! [4]');
+    case 'K': return giveWeapon('K', 'sfp', 5, 'SFP BAZOOKA picked up! [5]');
+    case 'G': return giveWeapon('G', 'hdd', 5, 'HARD DRIVES picked up! [6]');
+    case 'Y': return giveWeapon('Y', 'cells', 40, 'ZIP COMPRESSOR picked up! [7]');
+    case 'L': return giveWeapon('L', 'cells', 60, 'OVERCLOCK CANNON picked up! [8]');
   }
   if (!ok) return false;
   msg(text);
@@ -514,7 +514,7 @@ function fire() {
   if (w.proj !== 'hdd' && w.proj !== 'zip') P.flashT = 0.07;
   if (w.proj === 'sfp') P.shake = Math.max(P.shake, 0.25);
   Sfx[w.sfx]();
-  // le bruit réveille les ennemis
+  // the noise wakes enemies up
   for (const e of L.enemies) {
     if (e.state !== 'idle') continue;
     const d = Math.hypot(e.x - P.x, e.y - P.y);
@@ -575,7 +575,7 @@ function meleeAttack(w) {
     if (Math.abs(ex * dy - ey * dx) < ETYPES[e.type].radius + 0.3) { best = e; bestD = along; }
   }
   if (best) { damageEnemy(best, randi(w.dmg[0], w.dmg[1])); Sfx.melee(0); return; }
-  // coup de clavier dans une baie : migration Nutanix des racks spéciaux
+  // keyboard hit on a rack: Nutanix migration of special racks
   castRay(P.x, P.y, dx, dy);
   if (RH.d > 1.5 || !RH.tile) return;
   const ch = String.fromCharCode(RH.tile);
@@ -587,9 +587,9 @@ function meleeAttack(w) {
     const hx = P.x + dx * (RH.d - 0.1), hy = P.y + dy * (RH.d - 0.1);
     addFx(hx, hy, 'nutanix', 0.55, 0.7, 0.5);
     P.pickT = 0.2;
-    msg(`Rack ${SPECIAL_NAMES[ch]} migré vers NUTANIX ! (${L.migrated}/${L.totalSpecials})`);
+    msg(`${SPECIAL_NAMES[ch]} rack migrated to NUTANIX! (${L.migrated}/${L.totalSpecials})`);
     if (L.migrated === L.totalSpecials) {
-      msg('DATACENTER 100% NUTANIX ! Bonus : armure +50');
+      msg('100% NUTANIX DATACENTER! Bonus: +50 armor');
       INV.armor = Math.min(200, INV.armor + 50);
       quip('nutanixAll', 1, true);
     } else quip('nutanix', 0.8, true);
@@ -622,7 +622,7 @@ function damagePlayer(dmg, fromX, fromY) {
   }
 }
 
-/* ----------------------------------------------------- explosions & barils */
+/* ----------------------------------------------------- explosions & barrels */
 
 function damageBarrel(b, dmg) {
   b.hp -= dmg;
@@ -663,7 +663,7 @@ function updateBarrels(dt) {
   }
 }
 
-/* ----------------------------------------------------------------- ennemis */
+/* --------------------------------------------------------------- enemies */
 
 function killEnemy(e, how) {
   const T = ETYPES[e.type];
@@ -676,7 +676,7 @@ function killEnemy(e, how) {
   if (T.boss) {
     L.bossAlive = false;
     P.shake = 1;
-    msg(`${T.name} ÉLIMINÉ ! Le terminal de REBOOT est déverrouillé.`);
+    msg(`${T.name} ELIMINATED! The REBOOT terminal is unlocked.`);
     quip('bossKill', 1, true);
     for (const o of L.enemies) if (o !== e && alive(o)) { o.hp = 0; killEnemy(o); }
   } else if (how !== 'stomp') quip('kill', 0.18);
@@ -695,9 +695,9 @@ function damageEnemy(e, dmg) {
 
 function shrinkEnemy(e) {
   const T = ETYPES[e.type];
-  if (T.boss) { msg(`${T.name} est trop gros pour être compressé !`); damageEnemy(e, 40); return; }
+  if (T.boss) { msg(`${T.name} is too big to compress!`); damageEnemy(e, 40); return; }
   e.shrunk = 8; e.state = 'chase'; e.painT = 0.3; e.alerted = true;
-  msg(`${T.name} compressé en .zip ! Écrasez-le !`);
+  msg(`${T.name} compressed to .zip! Stomp it!`);
 }
 
 function passableForEnemy(i) {
@@ -780,7 +780,7 @@ function spawnMinions(boss) {
       }
     }
   }
-  msg(`${ETYPES[boss.type].name} appelle des renforts !`);
+  msg(`${ETYPES[boss.type].name} calls for reinforcements!`);
 }
 
 function updateEnemy(e, dt) {
@@ -804,7 +804,7 @@ function updateEnemy(e, dt) {
   e.animT += dt;
   if (e.painT > 0) { e.painT -= dt; return; }
   const shrunk = e.shrunk > 0;
-  if (shrunk) { e.shrunk -= dt; if (e.shrunk <= 0) msg(`${T.name} s'est décompressé !`); }
+  if (shrunk) { e.shrunk -= dt; if (e.shrunk <= 0) msg(`${T.name} decompressed itself!`); }
   e.cd -= dt;
   if (e.state === 'attack') {
     e.timer -= dt;
@@ -834,7 +834,7 @@ function updateEnemy(e, dt) {
 
   let tx, ty;
   if (shrunk) {
-    // un ennemi compressé fuit
+    // a compressed enemy runs away
     tx = e.x - dx; ty = e.y - dy;
   } else {
     const keep = T.melee ? 0 : (T.boss ? 3.5 : 3);
@@ -952,7 +952,7 @@ function projHitsTargets(p) {
   return false;
 }
 
-// Disque dur lancé : trajectoire en cloche, rebonds sur murs et sol, mèche de 1,7 s.
+// Thrown hard drive: arcing trajectory, bounces off walls and floor, 1.7 s fuse.
 function updateHdd(p, dt) {
   p.fuse -= dt;
   if (p.fuse <= 0) { projImpact(p); return; }
@@ -972,7 +972,7 @@ function blockedProj(x, y) {
   return L.block[i] && !L.barrels.some((b) => !b.dead && (b.x | 0) === (x | 0) && (b.y | 0) === (y | 0));
 }
 
-/* ------------------------------------------------------------------ rendu */
+/* ------------------------------------------------------------- rendering */
 
 function shade(c, s) {
   return 0xff000000 | ((((c >> 16) & 255) * s >> 8) << 16) | ((((c >> 8) & 255) * s >> 8) << 8) | ((c & 255) * s >> 8);
@@ -991,7 +991,7 @@ function render() {
   const floorT = Assets.floor, ceilT = Assets.ceil;
   const concreteT = Assets.concrete[L.def.episode % 5];
 
-  // sol et plafond
+  // floor and ceiling
   const rdx0 = dirX - plX, rdy0 = dirY - plY, rdx1 = dirX + plX, rdy1 = dirY + plY;
   for (let y = HORIZ; y < VH; y++) {
     const p = y - HORIZ + 0.5;
@@ -1010,7 +1010,7 @@ function render() {
     }
   }
 
-  // murs
+  // walls
   for (let x = 0; x < W; x++) {
     const cam = 2 * x / W - 1;
     const rdx = dirX + plX * cam, rdy = dirY + plY * cam;
@@ -1123,7 +1123,7 @@ function drawSprite(s) {
   }
 }
 
-/* ----------------------------------------------------------------- armes */
+/* --------------------------------------------------------------- weapons */
 
 function drawFlash(g, x, y, r, inner, outer) {
   g.fillStyle = outer;
@@ -1137,7 +1137,7 @@ function drawFlash(g, x, y, r, inner, outer) {
 }
 
 function drawHand(g, x, y, s = 1) {
-  g.fillStyle = '#5a4a2a'; g.fillRect(x - 16 * s, y, 40 * s, 60);           // manche (t-shirt kaki de Duke... d'admin)
+  g.fillStyle = '#5a4a2a'; g.fillRect(x - 16 * s, y, 40 * s, 60);           // sleeve (the admin's khaki t-shirt)
   ell(g, x, y, 18 * s, 13 * s, '#d9a47a');
   g.fillStyle = '#c08a62'; g.fillRect(x - 12 * s, y - 2, 24 * s, 2);
 }
@@ -1167,15 +1167,15 @@ function drawWeapon(g) {
       ell(g, 44, 14, 20, 13, '#d9a47a');
       break;
     }
-    case 1: { // pistolet à écrous cagés
+    case 1: { // cage nut pistol
       g.translate(cx + 10, base + t * 18);
       g.rotate(-t * 0.15);
       drawHand(g, 0, -28);
       g.fillStyle = '#2b2f35'; g.fillRect(-12, -100, 24, 72);
-      g.fillStyle = '#e8741a'; g.fillRect(-12, -100, 24, 32);           // corps orange façon cloueur
+      g.fillStyle = '#e8741a'; g.fillRect(-12, -100, 24, 32);           // orange nail-gun style body
       g.fillStyle = '#ff9a3a'; g.fillRect(-12, -100, 4, 32);
       g.fillStyle = '#111'; g.fillRect(-6, -104, 12, 6);
-      // chargeur tubulaire d'écrous
+      // tubular nut magazine
       g.fillStyle = '#555c64'; g.fillRect(14, -96, 10, 50);
       for (let i = 0; i < 5; i++) drawCageNut(g, 19, -90 + i * 10, 0.35, 0);
       if (t < 0.6) drawCageNut(g, 0, -108, 0.55, 0);
@@ -1196,12 +1196,12 @@ function drawWeapon(g) {
       if (flash) drawFlash(g, 0, -134, 40, '#fff6b0', '#ff7a1a');
       break;
     }
-    case 3: { // riveteuse gatling
+    case 3: { // Gatling riveter
       g.translate(cx, base + t * 6);
       drawHand(g, -34, -24);
       g.fillStyle = '#3a3f46'; g.fillRect(-34, -72, 68, 72);
       g.fillStyle = '#50565e'; g.fillRect(-34, -72, 68, 6);
-      // trémie d'écrous
+      // nut hopper
       g.fillStyle = '#6b4a2a'; g.fillRect(22, -66, 26, 30);
       for (let i = 0; i < 6; i++) drawCageNut(g, 28 + (i % 3) * 7, -58 + ((i / 3) | 0) * 9, 0.3, i);
       const bars = [];
@@ -1216,7 +1216,7 @@ function drawWeapon(g) {
       if (flash) drawFlash(g, randi(-8, 8), -140, 26, '#fff6b0', '#ffb040');
       break;
     }
-    case 4: { // bazooka SFP (à l'épaule, à droite)
+    case 4: { // SFP bazooka (on the right shoulder)
       g.translate(cx + 40, base + t * 22);
       drawHand(g, -10, -30);
       g.fillStyle = '#3a4a2a'; g.beginPath(); g.moveTo(-6, 0); g.lineTo(60, 0); g.lineTo(28, -118); g.lineTo(4, -118); g.closePath(); g.fill();
@@ -1227,7 +1227,7 @@ function drawWeapon(g) {
       if (flash) drawFlash(g, 16, -128, 34, '#fff6b0', '#ff7a1a');
       break;
     }
-    case 5: { // disque dur à lancer
+    case 5: { // hard drive to throw
       const s = t > 0 ? Math.sin(t * Math.PI) : 0;
       g.translate(cx + 50 - s * 60, base - 20 - s * 70);
       drawHand(g, 0, 0);
@@ -1237,12 +1237,12 @@ function drawWeapon(g) {
         g.fillStyle = '#c9ced4'; g.fillRect(-24, -34, 48, 4);
         ell(g, -4, -17, 12, 12, '#b4bac1'); ell(g, -4, -17, 3, 3, '#5a6068');
         g.fillStyle = '#fff'; g.fillRect(10, -30, 12, 18); g.fillStyle = '#c21d1d'; g.fillRect(10, -30, 12, 4);
-        g.fillStyle = '#111'; g.font = 'bold 4px monospace'; g.fillText('4 To', 11, -18);
+        g.fillStyle = '#111'; g.font = 'bold 4px monospace'; g.fillText('4 TB', 11, -18);
         g.restore();
       }
       break;
     }
-    case 6: { // compresseur ZIP
+    case 6: { // ZIP compressor
       g.translate(cx, base + t * 10);
       drawHand(g, -30, -20); drawHand(g, 30, -20);
       g.fillStyle = '#4a34a8'; g.fillRect(-36, -80, 72, 80);
@@ -1278,28 +1278,28 @@ function drawWeapon(g) {
 
 /* ------------------------------------------------------------------- HUD */
 
-// Visage de l'admin façon Duke : brosse blonde, lunettes noires, sourire en coin.
+// The admin's Duke-style face: blond flat-top, shades, smirk.
 function drawFace(g, cx, cy) {
   const hp = INV.hp;
   const mood = P.dead ? 'dead' : P.faceMood;
   g.fillStyle = hp > 60 ? '#e0a877' : hp > 30 ? '#d0966a' : '#c0845e';
-  g.fillRect(cx - 12, cy - 8, 24, 22);                        // mâchoire carrée
+  g.fillRect(cx - 12, cy - 8, 24, 22);                        // square jaw
   g.fillRect(cx - 10, cy + 14, 20, 3);
-  g.fillStyle = '#e8c23a'; g.fillRect(cx - 13, cy - 16, 26, 9); // brosse blonde
+  g.fillStyle = '#e8c23a'; g.fillRect(cx - 13, cy - 16, 26, 9); // blond flat-top
   g.fillStyle = '#c9a020'; for (let x = cx - 12; x < cx + 13; x += 3) g.fillRect(x, cy - 16, 1, 8);
   g.fillStyle = '#e8c23a'; g.fillRect(cx - 13, cy - 8, 3, 6); g.fillRect(cx + 10, cy - 8, 3, 6);
-  // lunettes noires
+  // shades
   if (mood === 'dead') {
     g.fillStyle = '#000'; g.font = '6px monospace'; g.fillText('x', cx - 8, cy + 1); g.fillText('x', cx + 3, cy + 1);
   } else {
     g.fillStyle = '#0a0a0a'; g.fillRect(cx - 12, cy - 5, 11, 6); g.fillRect(cx + 1, cy - 5, 11, 6); g.fillRect(cx - 1, cy - 4, 2, 2);
     g.fillStyle = god ? '#ffd700' : 'rgba(120,180,255,0.6)'; g.fillRect(cx - 10 + P.look, cy - 4, 3, 1); g.fillRect(cx + 3 + P.look, cy - 4, 3, 1);
   }
-  // bouche
+  // mouth
   g.fillStyle = '#5a1a1a';
   if (mood === 'ouch' || mood === 'dead') ell(g, cx, cy + 9, 3, 3, '#5a1a1a');
   else if (mood === 'grin' || god) { g.fillRect(cx - 6, cy + 7, 12, 3); g.fillStyle = '#fff'; g.fillRect(cx - 5, cy + 7, 10, 1); }
-  else { g.fillRect(cx - 2, cy + 9, 8, 2); g.fillRect(cx + 5, cy + 7, 2, 2); }  // sourire en coin
+  else { g.fillRect(cx - 2, cy + 9, 8, 2); g.fillRect(cx + 5, cy + 7, 2, 2); }  // smirk
   if (hp < 60) { g.fillStyle = '#b01515'; g.fillRect(cx + 7, cy + 2, 2, 6); }
   if (hp < 30) { g.fillRect(cx - 9, cy + 4, 2, 8); g.fillRect(cx + 3, cy + 12, 5, 2); }
 }
@@ -1317,7 +1317,7 @@ function drawHud(g) {
   };
   const label = (txt, x) => { g.font = `5px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#9aa3ad'; g.fillText(txt, x, y + 35); };
   const w = WEAPONS[INV.cur];
-  big(w.ammo ? String(INV.ammo[w.ammo]) : '--', 36, '#ff4d2e'); label('MUNITIONS', 36);
+  big(w.ammo ? String(INV.ammo[w.ammo]) : '--', 36, '#ff4d2e'); label('AMMO', 36);
   big(INV.hp + '%', 107, INV.hp > 30 ? '#ff4d2e' : '#ff1a1a'); label('EGO', 107);
   g.font = `7px ${FONT}`; g.textAlign = 'center';
   for (let i = 0; i < 8; i++) {
@@ -1325,11 +1325,11 @@ function drawHud(g) {
     g.fillStyle = i === INV.cur ? '#ffe14a' : INV.weapons[i] ? '#d8dde3' : '#3a3f46';
     g.fillText(String(i + 1), x, yy + 4);
   }
-  label('ARMES', 178);
+  label('WEAPONS', 178);
   g.fillStyle = '#0e1013'; g.fillRect(216, y + 3, 50, HUD_H - 4);
   if (P.hurtT > 0) { g.fillStyle = 'rgba(255,0,0,0.25)'; g.fillRect(216, y + 3, 50, HUD_H - 4); }
   drawFace(g, 241, y + 20);
-  big(INV.armor + '%', 301, '#4fb4ff'); label('ARMURE', 301);
+  big(INV.armor + '%', 301, '#4fb4ff'); label('ARMOR', 301);
   const badge = (on, col, yy) => { g.fillStyle = on ? col : '#2a2e34'; g.fillRect(347, y + yy, 14, 9); g.fillStyle = on ? '#eee' : '#1c1f24'; g.fillRect(349, y + yy + 5, 10, 2); };
   badge(L.keys.red, '#d42020', 7); badge(L.keys.blue, '#1f58d6', 20);
   g.font = `5px ${FONT}`; g.textAlign = 'left';
@@ -1355,7 +1355,7 @@ function drawOverlayText(g) {
     g.fillStyle = '#000'; g.fillText(L.def.name, W / 2 + 1, 61);
     g.fillStyle = '#3dff6a'; g.fillText(L.def.name, W / 2, 60);
     g.font = `5px ${FONT}`; g.fillStyle = '#9aa3ad';
-    g.fillText(`ÉPISODE ${L.def.episode + 1} : ${EPISODES[L.def.episode].name}`, W / 2, 72);
+    g.fillText(`EPISODE ${L.def.episode + 1}: ${EPISODES[L.def.episode].name}`, W / 2, 72);
     g.globalAlpha = 1;
   }
   if (L.subtitle && L.subtitle.t > 0) {
@@ -1368,10 +1368,10 @@ function drawOverlayText(g) {
   }
   g.font = `5px ${FONT}`; g.textAlign = 'right';
   g.fillStyle = 'rgba(220,230,240,0.8)'; g.fillText(WEAPONS[INV.cur].name, W - 6, VH - 6);
-  // compteur de migrations Nutanix
+  // Nutanix migration counter
   g.fillStyle = L.migrated === L.totalSpecials ? '#b6a4ff' : '#7855fa';
   g.fillText(`NUTANIX ${L.migrated}/${L.totalSpecials}`, W - 6, 12);
-  if (god) { g.fillStyle = '#ffd700'; g.fillText('MODE ROOT', W - 6, 21); }
+  if (god) { g.fillStyle = '#ffd700'; g.fillText('ROOT MODE', W - 6, 21); }
   if (P.boostT > 0) { g.fillStyle = '#3dff6a'; g.fillText(`TURBO ${Math.ceil(P.boostT)}`, W - 6, god ? 30 : 21); }
   const boss = L.enemies.find((e) => ETYPES[e.type].boss && alive(e) && e.state !== 'idle');
   if (boss) {
@@ -1407,7 +1407,7 @@ function drawMap(g) {
   g.lineTo(px + Math.cos(P.a - 2.5) * 4, py + Math.sin(P.a - 2.5) * 4);
   g.fill();
   g.font = `6px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#3dff6a';
-  g.fillText('PLAN DU DATACENTER — ' + L.def.name, W / 2, 12);
+  g.fillText('DATACENTER MAP — ' + L.def.name, W / 2, 12);
 }
 
 function present() {
@@ -1432,7 +1432,7 @@ function present() {
   drawHud(g);
 }
 
-/* ------------------------------------------------------------- déroulé */
+/* ------------------------------------------------------------- game loop */
 
 function updateMsgs(dt) {
   for (const m of L.msgs) m.t -= dt;
@@ -1466,7 +1466,7 @@ function frame(ts) {
   requestAnimationFrame(frame);
 }
 
-/* ---------------------------------------------------------- sauvegarde */
+/* ------------------------------------------------------------ save game */
 
 const SAVE_KEY = 'dukenutanix.save';
 function readSave() {
@@ -1476,10 +1476,10 @@ function writeSave(idx, inv) {
   const s = readSave() || { maxLevel: 0 };
   s.maxLevel = Math.max(s.maxLevel || 0, idx);
   s.level = idx; s.inv = inv;
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch (e) { /* stockage indisponible */ }
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch (e) { /* storage unavailable */ }
 }
 
-/* --------------------------------------------------------------- écrans */
+/* --------------------------------------------------------------- screens */
 
 const overlay = document.getElementById('overlay');
 const panel = document.getElementById('panel');
@@ -1498,15 +1498,15 @@ const fmtTime = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padSt
 
 const CONTROLS = `
   <table class="ctl">
-    <tr><td>ZQSD / WASD / ↑↓</td><td>Se déplacer</td></tr>
-    <tr><td>Souris / ← →</td><td>Tourner</td></tr>
-    <tr><td>Clic / Ctrl</td><td>Tirer</td></tr>
-    <tr><td>E / Espace</td><td>Ouvrir, fouiller les murs, boire</td></tr>
-    <tr><td>1-8 / molette</td><td>Changer d'arme</td></tr>
-    <tr><td>Maj</td><td>Courir</td></tr>
-    <tr><td>Tab / M</td><td>Plan du datacenter</td></tr>
-    <tr><td>Échap</td><td>Pause</td></tr>
-    <tr><td>N / V</td><td>Couper le son / la voix</td></tr>
+    <tr><td>WASD / ZQSD / ↑↓</td><td>Move</td></tr>
+    <tr><td>Mouse / ← →</td><td>Turn</td></tr>
+    <tr><td>Click / Ctrl</td><td>Fire</td></tr>
+    <tr><td>E / Space</td><td>Open, search walls, drink</td></tr>
+    <tr><td>1-8 / wheel</td><td>Switch weapon</td></tr>
+    <tr><td>Shift</td><td>Run</td></tr>
+    <tr><td>Tab / M</td><td>Datacenter map</td></tr>
+    <tr><td>Esc</td><td>Pause</td></tr>
+    <tr><td>N / V</td><td>Mute sound / voice</td></tr>
   </table>`;
 
 const actions = {
@@ -1536,19 +1536,19 @@ function showTitle() {
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.fillStyle = '#000'; vctx.fillRect(0, 0, view.width, view.height);
   const s = readSave();
-  const cont = s ? `<button data-act="continueGame" class="big">CONTINUER — ${getLevel(s.level).code}</button>` : '';
+  const cont = s ? `<button data-act="continueGame" class="big">CONTINUE — ${getLevel(s.level).code}</button>` : '';
   showPanel(`
     <h1 class="logo">DUKE <span class="ntnx">NUTANI<span class="x">X</span></span></h1>
-    <h2>L'ADMIN EST DE RETOUR<br><span class="ok">ET IL N'A PAS EU SON CAFÉ</span></h2>
-    <p class="story">Un ransomware s'est emparé du datacenter et ses processus corrompus ont pris
-    forme physique entre les baies. Armé d'un pistolet à <b>écrous cagés</b>, de disques durs
-    et d'un ego surdimensionné, traversez <b>5 épisodes et 50 niveaux</b>, trouvez les zones secrètes
-    et migrez au clavier chaque rack ESXi, Proxmox, Vates et Hyper-V vers <b>Nutanix</b>.</p>
+    <h2>THE ADMIN IS BACK<br><span class="ok">AND HE HASN'T HAD HIS COFFEE</span></h2>
+    <p class="story">A ransomware has seized the datacenter and its corrupted processes have taken
+    physical form between the racks. Armed with a <b>cage nut</b> pistol, hard drives and an
+    oversized ego, fight through <b>5 episodes and 50 levels</b>, find the secret areas and use
+    your keyboard to migrate every ESXi, Proxmox, Vates and Hyper-V rack to <b>Nutanix</b>.</p>
     ${cont}
-    <button data-act="newGame" class="${s ? '' : 'big'}">NOUVELLE PARTIE</button>
-    <button data-act="select">CHOISIR UN NIVEAU</button>
+    <button data-act="newGame" class="${s ? '' : 'big'}">NEW GAME</button>
+    <button data-act="select">SELECT LEVEL</button>
     ${CONTROLS}
-    <p class="hint">Cliquez dans le jeu pour capturer la souris. Codes : iddqd, idkfa.</p>
+    <p class="hint">Click inside the game to capture the mouse. Cheats: iddqd, idkfa.</p>
   `);
 }
 
@@ -1556,17 +1556,17 @@ function showSelect() {
   state = 'select';
   const s = readSave();
   const max = s ? s.maxLevel : 0;
-  let html = '<h2>CHOISIR UN NIVEAU</h2>';
+  let html = '<h2>SELECT LEVEL</h2>';
   EPISODES.forEach((ep, e) => {
-    html += `<h3>ÉPISODE ${e + 1} : ${ep.name}</h3><div class="grid">`;
+    html += `<h3>EPISODE ${e + 1}: ${ep.name}</h3><div class="grid">`;
     for (let k = 0; k < 10; k++) {
       const i = e * 10 + k;
       const locked = i > max;
-      html += `<button ${locked ? 'disabled' : `data-act="play" data-arg="${i}"`} title="${locked ? 'Verrouillé' : LEVEL_NAMES[i]}" class="lvl${k === 9 ? ' boss' : ''}">${e + 1}-${k + 1}</button>`;
+      html += `<button ${locked ? 'disabled' : `data-act="play" data-arg="${i}"`} title="${locked ? 'Locked' : LEVEL_NAMES[i]}" class="lvl${k === 9 ? ' boss' : ''}">${e + 1}-${k + 1}</button>`;
     }
     html += '</div>';
   });
-  html += '<p class="hint">Les niveaux se débloquent en progressant.</p><button data-act="title">RETOUR</button>';
+  html += '<p class="hint">Levels unlock as you progress.</p><button data-act="title">BACK</button>';
   showPanel(html);
 }
 
@@ -1578,10 +1578,10 @@ function startLevel(idx) {
   state = 'briefing';
   render(); present();
   showPanel(`
-    <h2>${L.def.name}<br><span class="ep">ÉPISODE ${L.def.episode + 1} : ${EPISODES[L.def.episode].name}</span></h2>
+    <h2>${L.def.name}<br><span class="ep">EPISODE ${L.def.episode + 1}: ${EPISODES[L.def.episode].name}</span></h2>
     <p class="story">${L.def.intro}</p>
-    <p class="story small">Racks à migrer vers Nutanix : ${L.totalSpecials} — Zones secrètes : ${L.totalSecrets}</p>
-    <button data-go class="big">ENTRER</button>
+    <p class="story small">Racks to migrate to Nutanix: ${L.totalSpecials} — Secret areas: ${L.totalSecrets}</p>
+    <button data-go class="big">ENTER</button>
   `, () => { hidePanel(); state = 'playing'; lockPointer(); quip('start', 0.9, true); });
 }
 
@@ -1591,16 +1591,16 @@ function pauseGame() {
   firing = false;
   showPanel(`
     <h2>PAUSE</h2>
-    <p class="story">${L.def.name}<br>Ennemis ${L.kills}/${L.totalKills} — Objets ${L.itemsGot}/${L.totalItems} — Secrets ${L.secrets}/${L.totalSecrets}<br>
-    Migrations Nutanix ${L.migrated}/${L.totalSpecials} — ${fmtTime(L.time)}</p>
-    <button data-act="resume" class="big">REPRENDRE</button>
-    <button data-act="restart">RECOMMENCER LE NIVEAU</button>
-    <button data-act="title">MENU PRINCIPAL</button>
-    <label class="sens">Sensibilité souris <input type="range" min="0.3" max="2.5" step="0.1" value="${sensitivity}" id="sens"></label>
+    <p class="story">${L.def.name}<br>Enemies ${L.kills}/${L.totalKills} — Items ${L.itemsGot}/${L.totalItems} — Secrets ${L.secrets}/${L.totalSecrets}<br>
+    Nutanix migrations ${L.migrated}/${L.totalSpecials} — ${fmtTime(L.time)}</p>
+    <button data-act="resume" class="big">RESUME</button>
+    <button data-act="restart">RESTART LEVEL</button>
+    <button data-act="title">MAIN MENU</button>
+    <label class="sens">Mouse sensitivity <input type="range" min="0.3" max="2.5" step="0.1" value="${sensitivity}" id="sens"></label>
     ${CONTROLS}
   `);
   const s = document.getElementById('sens');
-  s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dukenutanix.sens', s.value); } catch (e) { /* ignoré */ } };
+  s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dukenutanix.sens', s.value); } catch (e) { /* ignored */ } };
 }
 
 function resumeGame() {
@@ -1613,10 +1613,10 @@ function showDeath() {
   state = 'dead';
   document.exitPointerLock && document.exitPointerLock();
   showPanel(`
-    <h1 class="dead">SYSTÈME COMPROMIS</h1>
-    <p class="story">Kernel panic : l'admin d'astreinte ne répond plus.<br>Ennemis ${L.kills}/${L.totalKills} — ${fmtTime(L.time)}</p>
-    <button data-act="restart" class="big">RESTAURER LE SNAPSHOT</button>
-    <button data-act="title">MENU PRINCIPAL</button>
+    <h1 class="dead">SYSTEM COMPROMISED</h1>
+    <p class="story">Kernel panic: the on-call admin is not responding.<br>Enemies ${L.kills}/${L.totalKills} — ${fmtTime(L.time)}</p>
+    <button data-act="restart" class="big">RESTORE SNAPSHOT</button>
+    <button data-act="title">MAIN MENU</button>
   `);
 }
 
@@ -1635,53 +1635,53 @@ function completeLevel() {
   }
   const stats = `
     <table class="stats">
-      <tr><td>ENNEMIS</td><td>${pct(L.kills, L.totalKills)}</td></tr>
-      <tr><td>OBJETS</td><td>${pct(L.itemsGot, L.totalItems)}</td></tr>
+      <tr><td>ENEMIES</td><td>${pct(L.kills, L.totalKills)}</td></tr>
+      <tr><td>ITEMS</td><td>${pct(L.itemsGot, L.totalItems)}</td></tr>
       <tr><td>SECRETS</td><td>${pct(L.secrets, L.totalSecrets)}</td></tr>
-      <tr><td>MIGRATIONS NUTANIX</td><td>${L.migrated}/${L.totalSpecials}</td></tr>
-      <tr><td>TEMPS</td><td>${fmtTime(L.time)}</td></tr>
+      <tr><td>NUTANIX MIGRATIONS</td><td>${L.migrated}/${L.totalSpecials}</td></tr>
+      <tr><td>TIME</td><td>${fmtTime(L.time)}</td></tr>
     </table>`;
   if (lastLevel) {
     showPanel(`
-      <h1 class="logo">REBOOT RÉUSSI</h1>
-      <h2>LE DATACENTER EST SAUVÉ</h2>
-      <p class="story">Le ransomware est purgé, les baies redémarrent une à une et les LEDs repassent au vert.
-      Il est 6h47. L'admin allume une cigarette électronique, remet ses lunettes de soleil et
-      laisse à quelqu'un d'autre le soin d'écrire le post-mortem.</p>
+      <h1 class="logo">REBOOT COMPLETE</h1>
+      <h2>THE DATACENTER IS SAVED</h2>
+      <p class="story">The ransomware is purged, the racks power back up one by one and the LEDs turn green again.
+      It's 6:47 AM. The admin lights an e-cigarette, puts his shades back on and
+      leaves the post-mortem to somebody else.</p>
       ${stats}
-      <button data-act="title" class="big">MENU PRINCIPAL</button>
+      <button data-act="title" class="big">MAIN MENU</button>
     `);
     return;
   }
   const epDone = L.idx % 10 === 9;
   showPanel(`
-    <h2>${L.def.name}<br><span class="ok">— REBOOTÉ —</span></h2>
-    ${epDone ? `<p class="story"><b>ÉPISODE ${L.def.episode + 1} TERMINÉ !</b> Direction : ${EPISODES[L.def.episode + 1].name}.</p>` : ''}
+    <h2>${L.def.name}<br><span class="ok">— REBOOTED —</span></h2>
+    ${epDone ? `<p class="story"><b>EPISODE ${L.def.episode + 1} COMPLETE!</b> Next stop: ${EPISODES[L.def.episode + 1].name}.</p>` : ''}
     ${stats}
-    <button data-go class="big">SALLE SUIVANTE</button>
+    <button data-go class="big">NEXT ROOM</button>
   `, () => {
     INV.hp = Math.max(INV.hp, 1);
     startLevel(L.idx + 1);
   });
 }
 
-/* ---------------------------------------------------------------- entrées */
+/* ----------------------------------------------------------------- input */
 
 function lockPointer() {
   if (view.requestPointerLock && document.pointerLockElement !== view) {
-    try { const p = view.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignoré */ }
+    try { const p = view.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignored */ }
   }
 }
 
 let cheatBuf = '';
 function onCheat(k) {
   cheatBuf = (cheatBuf + k.toLowerCase()).slice(-8);
-  if (cheatBuf.endsWith('iddqd')) { god = !god; msg(god ? 'MODE ROOT activé (sudo su)' : 'MODE ROOT désactivé'); }
+  if (cheatBuf.endsWith('iddqd')) { god = !god; msg(god ? 'ROOT MODE enabled (sudo su)' : 'ROOT MODE disabled'); }
   if (cheatBuf.endsWith('idkfa')) {
     INV.weapons = INV.weapons.map(() => true);
     INV.ammo = { ...AMMO_MAX }; INV.armor = 200;
     L.keys.red = L.keys.blue = true;
-    msg('Arsenal complet + tous les badges');
+    msg('Full arsenal + all badges');
   }
 }
 
@@ -1700,12 +1700,12 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Tab' || e.key === 'm' || e.key === 'M') showMap = !showMap;
   if (e.code === 'Escape' || e.code === 'KeyP') pauseGame();
   if (e.code === 'ControlLeft' || e.code === 'ControlRight') firing = true;
-  if (e.key === 'n' || e.key === 'N') msg(Sfx.toggleMute() ? 'Son coupé' : 'Son activé');
+  if (e.key === 'n' || e.key === 'N') msg(Sfx.toggleMute() ? 'Sound off' : 'Sound on');
   if (e.key === 'v' || e.key === 'V') {
     voiceOn = !voiceOn;
     if (!voiceOn && window.speechSynthesis) speechSynthesis.cancel();
-    try { localStorage.setItem('dukenutanix.voice', voiceOn ? '1' : '0'); } catch (err) { /* ignoré */ }
-    msg(voiceOn ? "Voix de l'admin activée" : "Voix de l'admin coupée (sous-titres conservés)");
+    try { localStorage.setItem('dukenutanix.voice', voiceOn ? '1' : '0'); } catch (err) { /* ignored */ }
+    msg(voiceOn ? "Admin's voice on" : "Admin's voice off (subtitles kept)");
   }
 });
 window.addEventListener('keyup', (e) => {
@@ -1724,7 +1724,7 @@ window.addEventListener('mouseup', (e) => { if (e.button === 0) firing = false; 
 let skipMouse = 0;
 window.addEventListener('mousemove', (e) => {
   if (state !== 'playing' || document.pointerLockElement !== view) return;
-  // Chrome envoie parfois un énorme movementX juste après la capture du pointeur
+  // Chrome sometimes sends a huge movementX right after pointer lock
   if (skipMouse > 0) { skipMouse--; return; }
   if (Math.abs(e.movementX) > 250) return;
   mouseDX += e.movementX;
@@ -1744,9 +1744,9 @@ document.addEventListener('pointerlockchange', () => {
   else if (hadLock && state === 'playing') pauseGame();
 });
 
-/* ------------------------------------------------------------ démarrage */
+/* --------------------------------------------------------------- startup */
 
-// Reprend les sauvegardes et réglages enregistrés sous l'ancien nom du jeu (DOOOOOM).
+// Carries over saves and settings stored under the game's former name (DOOOOOM).
 function migrateStorage() {
   try {
     for (const k of ['save', 'sens', 'voice']) {
@@ -1754,7 +1754,7 @@ function migrateStorage() {
       if (old !== null && localStorage.getItem('dukenutanix.' + k) === null) localStorage.setItem('dukenutanix.' + k, old);
       localStorage.removeItem('dooooom.' + k);
     }
-  } catch (e) { /* stockage indisponible */ }
+  } catch (e) { /* storage unavailable */ }
 }
 
 function boot() {
@@ -1763,11 +1763,11 @@ function boot() {
   try {
     const s = localStorage.getItem('dukenutanix.sens'); if (s) sensitivity = +s;
     if (localStorage.getItem('dukenutanix.voice') === '0') voiceOn = false;
-  } catch (e) { /* ignoré */ }
+  } catch (e) { /* ignored */ }
   buildAssets();
   showTitle();
   requestAnimationFrame(frame);
-  // accès de débogage pour les tests automatisés
+  // debug hook for automated tests
   window.__duke = { get L() { return L; }, P, get INV() { return INV; }, get state() { return state; }, actions, keys, castRay };
 }
 

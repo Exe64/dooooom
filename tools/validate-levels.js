@@ -1,5 +1,5 @@
-// Génère et vérifie les 50 niveaux : dimensions, bordures, portes encadrées,
-// accessibilité avec badges, racks spéciaux.  Usage : node tools/validate-levels.js
+// Generates and checks all 50 levels: dimensions, borders, framed doors,
+// reachability with badges, special racks.  Usage: node tools/validate-levels.js
 const fs = require('fs');
 const path = require('path');
 const load = (f) => fs.readFileSync(path.join(__dirname, '../js', f), 'utf8');
@@ -11,8 +11,8 @@ for (let i = 0; i < LEVEL_COUNT; i++) {
   const r = LevelGen.validate(def.map);
   const n = (c) => def.map.join('').split(c).length - 1;
   const enemies = [...'bdotmZ'].reduce((a, c) => a + n(c), 0);
-  console.log(`${def.code.padEnd(6)} ${String(def.map[0].length).padStart(2)}x${String(def.map.length).padEnd(2)} ennemis ${String(enemies).padStart(2)}  secret ${n('?')}  badges ${n('1') + n('2')}  ${def.bossType || ''} ${r.ok ? 'OK' : 'ERREUR'}`);
+  console.log(`${def.code.padEnd(6)} ${String(def.map[0].length).padStart(2)}x${String(def.map.length).padEnd(2)} enemies ${String(enemies).padStart(2)}  secret ${n('?')}  badge doors ${n('1') + n('2')}  ${def.bossType || ''} ${r.ok ? 'OK' : 'ERROR'}`);
   if (!r.ok) { ok = false; r.errors.slice(0, 5).forEach((e) => console.log('   ' + e)); }
 }
-console.log(`${ok ? 'Niveaux OK' : 'Erreurs détectées'} (${Date.now() - t0} ms)`);
+console.log(`${ok ? 'Levels OK' : 'Errors found'} (${Date.now() - t0} ms)`);
 process.exit(ok ? 0 : 1);

@@ -1,18 +1,18 @@
 'use strict';
 /*
- * Générateur procédural de niveaux "datacenter" (navigateur et Node).
+ * Procedural "datacenter" level generator (browser and Node).
  *
- * Découpage BSP en salles séparées par des murs d'un bloc, reliées par des
- * portes (le graphe des salles est un arbre). On en déduit :
- *  - la salle de départ et la salle de sortie (la plus éloignée),
- *  - les portes à badge placées sur le chemin critique, badges placés en amont,
- *  - une salle secrète (cul-de-sac) derrière un faux mur,
- *  - la décoration de chaque salle (rangées de baies, climatiseurs, piliers...),
- *  - ennemis, objets et armes selon la difficulté.
- * Les graines sont fixes : un niveau donné est toujours identique.
+ * BSP split into rooms separated by one-block walls and linked by doors
+ * (the room graph is a tree). From it we derive:
+ *  - the start room and the exit room (the farthest one),
+ *  - badge doors on the critical path, with their badges placed upstream,
+ *  - a secret room (dead end) behind a fake wall,
+ *  - each room's decoration (rack rows, CRAC units, pillars...),
+ *  - enemies, items and weapons according to difficulty.
+ * Seeds are fixed: a given level is always identical.
  */
 const LevelGen = (() => {
-  // 3 Broadcom ESXi, 4 Proxmox, 5 Vates, 6 Hyper-V, 7 Nutanix (racks spéciaux)
+  // 3 Broadcom ESXi, 4 Proxmox, 5 Vates, 6 Hyper-V, 7 Nutanix (special racks)
   const WALLS = '#RSNCWX34567';
   const OBSTACLES = '#RSNCWX34567xB';
   const SPECIALS = '33456';
@@ -31,7 +31,7 @@ const LevelGen = (() => {
       out.map = placeSpecials(out.map, spec.seed + 17);
       if (validate(out.map).ok) return out;
     }
-    throw new Error('Génération impossible pour ' + spec.name);
+    throw new Error('Unable to generate ' + spec.name);
   }
 
   function tryGenerate(spec, seed) {
@@ -67,7 +67,7 @@ const LevelGen = (() => {
 
     let tree, arena = null;
     if (spec.boss) {
-      // arène du boss réservée à droite
+      // boss arena reserved on the right
       const sx = Math.floor(w * 0.52);
       const left = split(1, 1, sx - 1, h - 2, 1);
       const right = split(sx + 1, 1, w - 2, h - 2, 1, true);
@@ -75,7 +75,7 @@ const LevelGen = (() => {
       tree = { vertical: true, pos: sx, a: left, b: right, x0: 1, y0: 1, x1: w - 2, y1: h - 2 };
     } else tree = split(1, 1, w - 2, h - 2, 0);
 
-    // --- portes (une par nœud interne)
+    // --- doors (one per internal node)
     const doors = [];
     function connect(node) {
       if (node.leaf) return;
@@ -90,8 +90,8 @@ const LevelGen = (() => {
         for (let x = node.x0 + 1; x < node.x1; x++)
           if (g[y - 1][x] === '.' && g[y + 1][x] === '.' && g[y][x - 1] === '#' && g[y][x + 1] === '#') cands.push([x, y, x, y - 1, x, y + 1]);
       }
-      if (!cands.length) throw new Error('pas de porte');
-      // évite deux portes voisines
+      if (!cands.length) throw new Error('no door candidate');
+      // pick one candidate at random
       const c = pick(cands);
       const [x, y, ax, ay, bx, by] = c;
       g[y][x] = 'D';
@@ -103,7 +103,7 @@ const LevelGen = (() => {
     }
     try { connect(tree); } catch (e) { return null; }
 
-    // --- graphe : départ, sortie, chemin critique
+    // --- graph: start, exit, critical path
     const bfsRooms = (from, blockedDoor) => {
       const dist = new Array(rooms.length).fill(-1), prev = new Array(rooms.length).fill(null);
       dist[from] = 0;
@@ -119,7 +119,7 @@ const LevelGen = (() => {
     };
     const candidatesStart = rooms.filter((r) => r !== arena);
     let start = pick(candidatesStart);
-    // départ = extrémité d'un diamètre du graphe pour de longs niveaux
+    // start = one end of a graph diameter, for long levels
     const far = (id) => { const { dist } = bfsRooms(id); let best = id; dist.forEach((d, i) => { if (d > dist[best] && rooms[i] !== arena) best = i; }); return best; };
     start = rooms[far(start.id)];
     let exitRoom;
@@ -159,7 +159,7 @@ const LevelGen = (() => {
       return list.reduce((a, b) => (d[b.id] > d[a.id] ? b : a));
     }
 
-    // --- salle secrète : cul-de-sac hors chemin critique, sans badge
+    // --- secret room: dead end off the critical path, without a badge
     let secret = null;
     if (spec.secret) {
       const onPath = new Set([start.id, exitRoom.id]);
@@ -169,12 +169,12 @@ const LevelGen = (() => {
     }
     for (const d of doors) g[d.y][d.x] = d.ch;
 
-    // --- sortie
+    // --- exit
     {
       const r = exitRoom, cands = [];
       for (let x = r.x0 + 1; x < r.x1; x++) { cands.push([x, r.y0 - 1, x, r.y0]); cands.push([x, r.y1 + 1, x, r.y1]); }
       for (let y = r.y0 + 1; y < r.y1; y++) { cands.push([r.x0 - 1, y, r.x0, y]); cands.push([r.x1 + 1, y, r.x1, y]); }
-      // le mur ne doit pas donner sur une autre salle (sinon on contourne les portes)
+      // the wall must not face another room (otherwise the doors could be bypassed)
       const ok = cands.filter(([x, y, ix, iy]) => {
         const ox = 2 * x - ix, oy = 2 * y - iy;
         return g[y][x] === '#' && !reserved.has(key(x, y)) && (!g[oy] || g[oy][ox] === undefined || g[oy][ox] === '#');
@@ -185,7 +185,7 @@ const LevelGen = (() => {
       reserved.add(key(ix, iy));
     }
 
-    // --- décoration
+    // --- decoration
     const free = (x, y) => g[y][x] === '.' && !reserved.has(key(x, y));
     const ep = spec.episode;
     const rackMix = [['R', 'R', 'S', 'N'], ['R', 'S', 'C'], ['N', 'N', 'R'], ['S', 'S', 'S', 'N'], ['R', 'S', 'N', 'N']][ep % 5];
@@ -198,9 +198,9 @@ const LevelGen = (() => {
       const iw = r.x1 - r.x0 + 1, ih = r.y1 - r.y0 + 1;
       const t = R();
       const rc = pick(rackMix);
-      if (r === secret) { /* salle secrète : pas d'obstacles */ }
+      if (r === secret) { /* secret room: no obstacles */ }
       else if (t < 0.55 && Math.min(iw, ih) >= 5) {
-        // rangées de baies (allées chaudes / froides)
+        // rack rows (hot / cold aisles)
         const horiz = iw >= ih;
         const len0 = horiz ? r.x0 + 1 : r.y0 + 1, len1 = horiz ? r.x1 - 1 : r.y1 - 1;
         const a0 = horiz ? r.y0 : r.x0, a1 = horiz ? r.y1 : r.x1;
@@ -208,27 +208,27 @@ const LevelGen = (() => {
         for (let a = a0 + 2; a + (double ? 1 : 0) <= a1 - 2; a += double ? 4 : 3) {
           const c = R() < 0.7 ? rc : pick(rackMix);
           for (let l = len0 + 1; l <= len1 - 1; l++) {
-            if ((l - len0) % 7 === 6) continue; // passage
+            if ((l - len0) % 7 === 6) continue; // gap
             for (let k = 0; k <= (double ? 1 : 0); k++) horiz ? place(l, a + k, c) : place(a + k, l, c);
           }
         }
       } else if (t < 0.7) {
-        // climatiseurs contre les murs + îlot central
+        // CRAC units along the walls + central island
         for (let x = r.x0 + 1; x < r.x1; x += 2) { if (R() < 0.7) place(x, r.y0, 'C'); if (R() < 0.5) place(x, r.y1, 'C'); }
         if (iw >= 7 && ih >= 7) for (let y = r.y0 + 3; y <= r.y1 - 3; y++) for (let x = r.x0 + 3; x <= r.x1 - 3; x++) if (R() < 0.35) place(x, y, rc);
       } else if (t < 0.85 && iw >= 6 && ih >= 6) {
-        // piliers de baies 2x2
+        // 2x2 rack pillars
         for (let y = r.y0 + 2; y + 1 <= r.y1 - 2; y += 4) for (let x = r.x0 + 2; x + 1 <= r.x1 - 2; x += 4) {
           const c = pick(rackMix);
           place(x, y, c); place(x + 1, y, c); place(x, y + 1, c); place(x + 1, y + 1, c);
         }
       } else {
-        // zone de stockage : cartons
+        // storage area: boxes
         const n = Math.floor(iw * ih / 12);
         for (let i = 0; i < n; i++) place(ri(r.x0 + 1, r.x1 - 1), ri(r.y0 + 1, r.y1 - 1), 'x');
         if (R() < 0.4) for (let y = r.y0 + 1; y < r.y1; y += 3) place(r.x0, y, 'W');
       }
-      // batteries d'onduleur explosives
+      // explosive UPS batteries
       const nb = R() < spec.barrels ? ri(1, 3) : 0;
       for (let i = 0; i < nb; i++) place(ri(r.x0 + 1, r.x1 - 1), ri(r.y0 + 1, r.y1 - 1), 'B');
       if (!roomConnected(r)) for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) g[y][x] = backup[y - r.y0][x - r.x0];
@@ -260,7 +260,7 @@ const LevelGen = (() => {
       return seen.size === total;
     }
 
-    // --- entités
+    // --- entities
     const cellsOf = (r) => {
       const out = [];
       for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) if (g[y][x] === '.' && !reserved.has(key(x, y))) out.push([x, y]);
@@ -272,7 +272,7 @@ const LevelGen = (() => {
       const [x, y] = pick(c);
       g[y][x] = ch; return true;
     };
-    // joueur au plus près du centre de la salle de départ
+    // player as close as possible to the center of the start room
     {
       const c = cellsOf(start);
       const cx = (start.x0 + start.x1) / 2, cy = (start.y0 + start.y1) / 2;
@@ -300,7 +300,7 @@ const LevelGen = (() => {
 
     const allRooms = rooms.filter((r) => r !== secret);
     for (const [ch, n] of Object.entries(spec.items)) for (let i = 0; i < n; i++) putIn(pick(allRooms), ch);
-    // armes : sur le chemin, avant la première porte à badge
+    // weapons: on the path, before the first badge door
     const early = reach(path.find((d) => d.ch === '2' || d.ch === '1') || null);
     for (const ch of spec.weapons) putIn(pick(early.length ? early : allRooms), ch);
     if (secret) for (const ch of spec.secretLoot) putIn(secret, ch);
@@ -310,25 +310,25 @@ const LevelGen = (() => {
     return { map: g.map((row) => row.join('')), secret: !!secret };
   }
 
-  /* Vérification : dimensions, bordures, portes encadrées, tout est accessible. */
+  /* Checks: dimensions, borders, framed doors, everything reachable. */
   function validate(map) {
     const errors = [];
     const h = map.length, w = map[0].length;
-    map.forEach((row, y) => { if (row.length !== w) errors.push(`ligne ${y} : longueur ${row.length} au lieu de ${w}`); });
+    map.forEach((row, y) => { if (row.length !== w) errors.push(`row ${y}: length ${row.length} instead of ${w}`); });
     if (errors.length) return { ok: false, errors };
     const isWall = (c) => WALLS.includes(c);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const c = map[y][x];
-      if ((y === 0 || x === 0 || y === h - 1 || x === w - 1) && !isWall(c)) errors.push(`bordure ouverte en ${x},${y}`);
+      if ((y === 0 || x === 0 || y === h - 1 || x === w - 1) && !isWall(c)) errors.push(`open border at ${x},${y}`);
       if ('D12?'.includes(c)) {
         const horiz = isWall(map[y][x - 1]) && isWall(map[y][x + 1]) && !isWall(map[y - 1][x]) && !isWall(map[y + 1][x]);
         const vert = isWall(map[y - 1][x]) && isWall(map[y + 1][x]) && !isWall(map[y][x - 1]) && !isWall(map[y][x + 1]);
-        if (!horiz && !vert) errors.push(`porte ${x},${y} mal encadrée`);
+        if (!horiz && !vert) errors.push(`door ${x},${y} not framed by walls`);
       }
     }
     const starts = [];
     map.forEach((r, y) => [...r].forEach((c, x) => { if (c === 'P') starts.push([x, y]); }));
-    if (starts.length !== 1) { errors.push(`${starts.length} départs joueur`); return { ok: false, errors }; }
+    if (starts.length !== 1) { errors.push(`${starts.length} player starts`); return { ok: false, errors }; }
     const keys = new Set();
     let seen;
     for (let pass = 0; pass < 4; pass++) {
@@ -353,22 +353,21 @@ const LevelGen = (() => {
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const c = map[y][x];
       if (c === 'X') for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const n = map[y + dy] && map[y + dy][x + dx]; if (n && seen.has((x + dx) + ',' + (y + dy))) exit = true; }
-      if (!OBSTACLES.includes(c) && !seen.has(x + ',' + y)) errors.push(`case inaccessible ${x},${y} (${c})`);
+      if (!OBSTACLES.includes(c) && !seen.has(x + ',' + y)) errors.push(`unreachable cell ${x},${y} (${c})`);
     }
-    if (!exit) errors.push('sortie inaccessible');
+    if (!exit) errors.push('exit unreachable');
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) if (map[y][x] === 'X' &&
-      [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => !OBSTACLES.includes(map[y + dy][x + dx])).length > 1) errors.push(`sortie ${x},${y} accessible des deux côtés`);
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => !OBSTACLES.includes(map[y + dy][x + dx])).length > 1) errors.push(`exit ${x},${y} reachable from both sides`);
     const count = (ch) => map.join('').split(ch).length - 1;
-    if (count('3') !== 2 || count('4') !== 1 || count('5') !== 1 || count('6') !== 1) errors.push('racks spéciaux manquants');
+    if (count('3') !== 2 || count('4') !== 1 || count('5') !== 1 || count('6') !== 1) errors.push('missing special racks');
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if ('3456'.includes(map[y][x]) &&
-      ![[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => seen.has((x + dx) + ',' + (y + dy)))) errors.push(`rack spécial ${x},${y} inaccessible`);
+      ![[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => seen.has((x + dx) + ',' + (y + dy)))) errors.push(`special rack ${x},${y} unreachable`);
     return { ok: errors.length === 0, errors };
   }
 
   /*
-   * Place les 5 racks spéciaux (2 ESXi, 1 Proxmox, 1 Vates, 1 Hyper-V) sur des
-   * baies (ou à défaut des murs) qui donnent sur une case accessible, en les
-   * répartissant dans le niveau.
+   * Places the 5 special racks (2 ESXi, 1 Proxmox, 1 Vates, 1 Hyper-V) on racks
+   * (or, failing that, walls) facing a reachable cell, spread across the level.
    */
   function placeSpecials(map, seed) {
     const R = rng(seed);

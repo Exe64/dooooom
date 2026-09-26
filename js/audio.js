@@ -1,5 +1,5 @@
 'use strict';
-/* Sons 100 % synthétisés avec la Web Audio API : aucun fichier audio. */
+/* Sounds are 100% synthesized with the Web Audio API: no audio files. */
 const Sfx = (() => {
   let ac = null, master = null, noiseBuf = null, hum = null;
   let muted = false;
@@ -18,7 +18,7 @@ const Sfx = (() => {
     startHum();
   }
 
-  // Ronronnement des ventilateurs du datacenter (bruit filtré + ronflement 50 Hz).
+  // Datacenter fan hum (filtered noise + 50 Hz mains hum).
   function startHum() {
     const src = ac.createBufferSource();
     src.buffer = noiseBuf; src.loop = true;
@@ -70,7 +70,7 @@ const Sfx = (() => {
     o.start(t); o.stop(t + dur + 0.05);
   }
 
-  // Volume selon la distance au joueur.
+  // Volume falls off with distance to the player.
   const att = (d) => d === undefined ? 1 : Math.max(0, 1 - d / 18);
 
   return {

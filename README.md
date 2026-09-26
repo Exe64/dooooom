@@ -1,107 +1,113 @@
-# DUKE NUTANIX — L'admin est de retour
+<p align="center">
+  <img src="docs/banner.jpg" alt="Duke Nutanix — the admin is back" width="100%">
+</p>
 
-FPS rétro jouable dans le navigateur, dans l'esprit de Duke Nukem 3D, où les niveaux sont des datacenters.
-Un ransomware s'est emparé des salles serveurs et ses processus corrompus ont pris forme physique
-entre les baies. L'admin d'astreinte, avec ses lunettes noires et son ego surdimensionné, part
-tout rebooter : 5 épisodes, 50 niveaux.
+# DUKE NUTANIX — The admin is back
 
-Aucun asset externe : textures, logos, sprites, armes et sons sont générés par le code
-(canvas 2D + Web Audio API, voix par synthèse vocale du navigateur). Pas de build, pas de dépendance.
+A retro first-person shooter that runs in the browser, in the spirit of Duke Nukem 3D, where every level is a datacenter.
+A ransomware has seized the server rooms and its corrupted processes have taken physical form between the racks.
+The on-call admin, with his shades and his oversized ego, sets out to reboot everything: 5 episodes, 50 levels.
 
-## Jouer
+No external assets: textures, logos, sprites, weapons and sounds are all generated in code
+(2D canvas + Web Audio API, with the admin's voice provided by the browser's speech synthesis). No build step, no dependencies.
 
-Ouvrir `index.html` dans un navigateur, ou servir le dossier :
+## Play
+
+Open `index.html` in a browser, or serve the folder:
 
 ```sh
 python3 -m http.server 8000
-# puis http://localhost:8000
+# then open http://localhost:8000
 ```
 
-La progression est sauvegardée dans le navigateur (bouton CONTINUER, choix des niveaux débloqués).
+Progress is saved in the browser (CONTINUE button, and a level select for unlocked levels).
 
-## Commandes
+## Controls
 
-| Touche | Action |
+| Key | Action |
 | --- | --- |
-| ZQSD / WASD / ↑↓ | Se déplacer (AZERTY et QWERTY) |
-| Souris / ← → | Tourner |
-| Clic / Ctrl | Tirer |
-| E / Espace | Ouvrir une porte, fouiller un mur (zones secrètes), boire à la fontaine, activer le terminal de REBOOT |
-| 1-8 / molette | Changer d'arme |
-| Maj | Courir |
-| Tab / M | Plan du datacenter |
-| Échap / P | Pause (sensibilité souris) |
-| N / V | Couper le son / la voix de l'admin |
+| WASD / ZQSD / ↑↓ | Move (QWERTY and AZERTY) |
+| Mouse / ← → | Turn |
+| Click / Ctrl | Fire |
+| E / Space | Open doors, search walls (secret areas), drink from water coolers, activate the REBOOT terminal |
+| 1-8 / wheel | Switch weapon |
+| Shift | Run |
+| Tab / M | Datacenter map |
+| Esc / P | Pause (mouse sensitivity) |
+| N / V | Mute sound / the admin's voice |
 
-Codes de triche : `iddqd` (mode root) et `idkfa`.
+Cheat codes: `iddqd` (root mode) and `idkfa`.
 
-## Migrations Nutanix
+## Nutanix migrations
 
-Chaque niveau contient 5 racks spéciaux, chacun aux couleurs de sa techno :
+Every level contains 5 special racks, each in its vendor's colors:
 
-| Rack | Nombre | Couleurs |
+| Rack | Count | Colors |
 | --- | --- | --- |
-| Broadcom ESXi | 2 | rouge Broadcom, pastille ronde |
-| Proxmox | 1 | orange et noir, le « X » |
-| Vates XCP-ng | 1 | bleu nuit et bleu |
-| Hyper-V | 1 | les quatre carrés Microsoft |
+| Broadcom ESXi | 2 | Broadcom red, round badge |
+| Proxmox | 1 | orange and black, the "X" |
+| Vates XCP-ng | 1 | navy and blue |
+| Hyper-V | 1 | the four Microsoft squares |
 
-Un coup de **clavier** (arme 1) sur l'un d'eux le migre en rack **Nutanix** (anthracite et violet Iris).
-Migrer les 5 racks d'un niveau donne un bonus d'armure. Le compteur s'affiche en haut à droite
-et dans le bilan de fin de niveau.
+Hit one with the **keyboard** (weapon 1) and it migrates into a **Nutanix** rack (charcoal and Iris purple).
+Migrating all 5 racks in a level grants an armor bonus. The counter is shown in the top-right corner
+and in the end-of-level summary.
 
 ## Arsenal
 
-| # | Arme | Munitions |
+| # | Weapon | Ammo |
 | --- | --- | --- |
-| 1 | Clavier mécanique (et outil de migration) | — |
-| 2 | Pistolet à écrous cagés | écrous cagés M6 |
-| 3 | Fusil à paquets | trames jumbo |
-| 4 | Riveteuse Gatling (écrous cagés) | écrous cagés M6 |
-| 5 | Bazooka SFP | modules SFP+ |
-| 6 | Disques durs (grenades qui rebondissent) | disques durs |
-| 7 | Compresseur ZIP : rétrécit l'ennemi, il n'y a plus qu'à l'écraser | cellules |
-| 8 | Canon Overclock | cellules |
+| 1 | Mechanical keyboard (also the migration tool) | — |
+| 2 | Cage nut pistol | M6 cage nuts |
+| 3 | Packet shotgun | jumbo frames |
+| 4 | Gatling riveter (cage nuts) | M6 cage nuts |
+| 5 | SFP bazooka | SFP+ modules |
+| 6 | Hard drives (bouncing grenades) | hard drives |
+| 7 | ZIP compressor: shrinks enemies so you can stomp them | energy cells |
+| 8 | Overclock cannon | energy cells |
 
-## Bestiaire
+## Bestiary
 
-Bugs, drones viraux, bots BSOD, trolls de forum, spammeurs, et un boss par épisode :
-BOTNET, CRYPTOMINEUR, ROOTKIT, ZERO-DAY, et le RANSOMWARE en finale.
+- **Enemies**: bugs, viral drones, BSOD bots, forum trolls and spammers.
+- **Bosses**, one per episode: BOTNET, CRYPTOMINER, ROOTKIT, ZERO-DAY, and the RANSOMWARE in the finale.
 
-Autres éléments : batteries d'onduleur explosives, zones secrètes derrière de faux murs,
-fontaines à eau, boissons énergisantes (turbo) et répliques de l'admin, affichées en sous-titres
-et prononcées par la synthèse vocale.
+Also featured:
+- explosive UPS batteries;
+- secret areas behind fake walls;
+- water coolers and energy drinks (turbo);
+- the admin's one-liners, shown as subtitles and spoken by speech synthesis.
 
-## Niveaux
+## Levels
 
-- E1M1, E1M2 et le final E5M10 sont dessinés à la main dans `js/levels.js`.
-- Les 47 autres sont générés par `js/levelgen.js`, avec une graine fixe : ils sont identiques à chaque partie.
-  - Découpage BSP en salles reliées par des portes.
-  - Portes à badge sur le chemin critique.
-  - Une salle secrète dans un cul-de-sac.
-  - Décor par salle : rangées de baies en allées chaudes et froides, climatiseurs, piliers, stockage.
-  - Difficulté croissante, et une arène de boss au 10e niveau de chaque épisode.
+- E1M1, E1M2 and the E5M10 finale are hand-drawn in `js/levels.js`.
+- The other 47 are generated by `js/levelgen.js` from a fixed seed, so they are identical in every playthrough.
+  - BSP split into rooms linked by doors.
+  - Badge doors on the critical path.
+  - A secret room in a dead end.
+  - Per-room decoration: rack rows with hot and cold aisles, CRAC units, pillars, storage.
+  - Rising difficulty, with a boss arena on the 10th level of each episode.
 
-Vérifier les 50 niveaux :
+Check all 50 levels:
 
 ```sh
 node tools/validate-levels.js
 ```
 
-Le script contrôle, pour chaque niveau :
-- les dimensions et les bordures ;
-- que chaque porte est encadrée par des murs ;
-- que toutes les cases, la sortie et les racks spéciaux sont accessibles avec les badges disponibles ;
-- que la sortie ne peut pas être activée depuis une autre salle.
+For every level, the script checks:
+- dimensions and borders;
+- that every door is framed by walls;
+- that every cell, the exit and the special racks are reachable with the available badges;
+- that the exit cannot be triggered from another room.
 
-## Structure
+## Project layout
 
 ```
 index.html               page, menus, styles
-js/levelgen.js           générateur procédural + validation des cartes
-js/levels.js             épisodes, noms, niveaux faits main, paramètres de difficulté
-js/textures.js           textures, logos des racks, sprites
-js/audio.js              effets sonores synthétisés
-js/game.js               moteur de raycasting, IA, armes, HUD, sauvegarde, boucle de jeu
-tools/validate-levels.js vérification des 50 niveaux
+docs/banner.jpg          README banner
+js/levelgen.js           procedural generator + map validation
+js/levels.js             episodes, level names, hand-drawn levels, difficulty settings
+js/textures.js           textures, rack logos, sprites
+js/audio.js              synthesized sound effects
+js/game.js               raycasting engine, AI, weapons, HUD, save game, game loop
+tools/validate-levels.js checks all 50 levels
 ```

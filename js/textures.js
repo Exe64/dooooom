@@ -1,9 +1,9 @@
 'use strict';
 /*
- * Tout le visuel est généré à la volée sur des canvas 64x64 :
- * textures de murs (baies, clim, portes...), sols, plafonds et sprites.
- * Chaque texture est convertie en Uint32Array (format ABGR little-endian)
- * accompagnée d'un masque "émissif" (pixels non assombris par la distance : LEDs, écrans).
+ * All visuals are generated on the fly on 64x64 canvases:
+ * wall textures (racks, CRAC units, doors...), floors, ceilings and sprites.
+ * Each texture is converted to a Uint32Array (little-endian ABGR) together with
+ * an "emissive" mask (pixels not darkened by distance: LEDs, screens).
  */
 const TEX = 64;
 
@@ -41,7 +41,7 @@ function noiseFill(g, R, x, y, w, h, r, gg, b, amp) {
   }
 }
 
-/* ------------------------------------------------------------------ murs */
+/* ----------------------------------------------------------------- walls */
 
 const EP_STRIPES = [['#1f4f7a', '#2e6da6'], ['#1f6a7a', '#3aa6c0'], ['#7a5a1f', '#c0902e'], ['#4a3a6a', '#7a62a6'], ['#7a1f2a', '#c0303e']];
 function concrete(ep) { return (g, R) => drawConcrete(g, R, ep); }
@@ -51,12 +51,12 @@ function drawConcrete(g, R, ep = 0) {
   g.fillRect(0, 0, 64, 1); g.fillRect(0, 0, 1, 64); g.fillRect(32, 0, 1, 40);
   g.fillStyle = 'rgba(255,255,255,0.08)';
   g.fillRect(1, 1, 63, 1); g.fillRect(33, 1, 1, 39);
-  // bandeau bleu peint (signalétique datacenter)
+  // painted stripe (datacenter signage)
   g.fillStyle = EP_STRIPES[ep][0]; g.fillRect(0, 40, 64, 6);
   g.fillStyle = EP_STRIPES[ep][1]; g.fillRect(0, 40, 64, 1);
-  // plinthe
+  // baseboard
   g.fillStyle = '#3a3d42'; g.fillRect(0, 58, 64, 6);
-  // taches
+  // stains
   for (let i = 0; i < 6; i++) {
     g.fillStyle = `rgba(0,0,0,${0.05 + R() * 0.1})`;
     g.fillRect((R() * 60) | 0, (R() * 38) | 0, 2 + ((R() * 4) | 0), 1 + ((R() * 3) | 0));
@@ -81,7 +81,7 @@ function drawRack(kind) {
     g.fillStyle = '#23272d'; g.fillRect(0, 0, 4, 64); g.fillRect(60, 0, 4, 64);
     g.fillStyle = '#3a4047'; g.fillRect(1, 0, 1, 64); g.fillRect(62, 0, 1, 64);
     g.fillStyle = '#2a2e34'; g.fillRect(0, 0, 64, 3);
-    // porte vitrée perforée : petits reflets
+    // server units, top to bottom
     let y = 4;
     while (y < 60) {
       const u = kind === 'S' ? 8 : (R() < 0.3 ? 8 : 5);
@@ -122,7 +122,7 @@ function drawRack(kind) {
         g.stroke();
       }
     }
-    // étiquette
+    // label
     g.fillStyle = '#d8d8d0'; g.fillRect(24, 0, 16, 3);
   };
 }
@@ -130,13 +130,13 @@ function drawRack(kind) {
 function drawCrac(g, R, led, L) {
   noiseFill(g, R, 0, 0, 64, 64, 196, 200, 204, 10);
   g.fillStyle = '#8d9399'; g.fillRect(0, 0, 64, 2); g.fillRect(0, 62, 64, 2); g.fillRect(0, 0, 2, 64); g.fillRect(31, 0, 2, 64); g.fillRect(62, 0, 2, 64);
-  // grille de ventilation
+  // air grille
   for (let y = 22; y < 58; y += 3) {
     g.fillStyle = '#5d636a'; g.fillRect(5, y, 23, 2); g.fillRect(36, y, 23, 2);
   }
-  // écran de contrôle
+  // control display
   led(6, 6, 20, 10, '#082034');
-  g.fillStyle = '#5fd3ff'; g.font = '7px monospace'; g.fillText('18°C', 8, 14);
+  g.fillStyle = '#5fd3ff'; g.font = '7px monospace'; g.fillText('64°F', 8, 14);
   led(37, 8, 3, 2, L() < 0.8 ? '#3dff6a' : '#ff3b3b');
   g.fillStyle = '#2e6da6'; g.fillRect(43, 7, 16, 4);
   g.fillStyle = '#7a8087'; g.fillRect(37, 14, 22, 2);
@@ -147,11 +147,11 @@ function drawDoor(kind) {
     noiseFill(g, R, 0, 0, 64, 64, 110, 118, 128, 10);
     g.fillStyle = '#4d535b'; g.fillRect(0, 0, 64, 3); g.fillRect(0, 0, 3, 64); g.fillRect(61, 0, 3, 64);
     for (let x = 8; x < 58; x += 8) { g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x, 4, 1, 44); g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(x + 1, 4, 1, 44); }
-    // hublot
+    // window
     g.fillStyle = '#20262d'; g.fillRect(20, 10, 24, 16);
     g.fillStyle = '#0d1e2e'; g.fillRect(22, 12, 20, 12);
     g.fillStyle = 'rgba(120,180,255,0.35)'; g.fillRect(23, 13, 6, 2); g.fillRect(23, 15, 3, 3);
-    // bandes de danger
+    // hazard stripes
     for (let x = -8; x < 64; x += 8) {
       g.fillStyle = '#f2c230';
       g.beginPath(); g.moveTo(x, 64); g.lineTo(x + 4, 64); g.lineTo(x + 12, 52); g.lineTo(x + 8, 52); g.fill();
@@ -162,7 +162,7 @@ function drawDoor(kind) {
       const hi = kind === 'red' ? '#ff4040' : '#4fa0ff';
       g.fillStyle = col; g.fillRect(3, 32, 58, 8);
       g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.textAlign = 'center';
-      g.fillText(kind === 'red' ? 'ACCÈS ROUGE' : 'ACCÈS BLEU', 32, 38);
+      g.fillText(kind === 'red' ? 'RED ACCESS' : 'BLUE ACCESS', 32, 38);
       g.fillStyle = '#222'; g.fillRect(52, 42, 7, 8);
       led(54, 43, 3, 2, hi);
     } else {
@@ -185,7 +185,7 @@ function drawExit(g, R, led, L) {
   g.fillStyle = '#f2c230'; g.fillRect(2, 60, 60, 2);
 }
 
-/* ------------------------------------------------------------- sols/plafonds */
+/* ------------------------------------------------------- floors/ceilings */
 
 function drawFloor(perf) {
   return (g, R) => {
@@ -210,7 +210,7 @@ function drawCeiling(light) {
       led(12, 24, 40, 16, '#dfe9f5');
       g.fillStyle = '#b8c6d6'; for (let x = 16; x < 50; x += 6) g.fillRect(x, 24, 1, 16);
     } else {
-      // chemin de câbles
+      // cable tray
       g.fillStyle = '#3a3f45'; g.fillRect(26, 0, 12, 64);
       g.fillStyle = '#e8c21a'; g.fillRect(28, 0, 2, 64);
       g.fillStyle = '#2a7de1'; g.fillRect(31, 0, 2, 64);
@@ -232,7 +232,7 @@ function spriteFromCanvas(c) {
   const g = c.getContext('2d');
   const d = g.getImageData(0, 0, c.width, c.height).data;
   const px = new Uint32Array(d.buffer.slice(0));
-  // alpha binaire
+  // binary alpha
   for (let i = 0; i < px.length; i++) if ((px[i] >>> 24) < 110) px[i] = 0; else px[i] |= 0xff000000;
   return { px, w: c.width, h: c.height, canvas: c };
 }
@@ -240,7 +240,7 @@ function spriteFromCanvas(c) {
 function ell(g, x, y, rx, ry, col) { g.fillStyle = col; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill(); }
 function ln(g, x0, y0, x1, y1, col, w) { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); }
 
-// Bug : insecte-glitch vert fluo
+// Bug: neon-green glitch insect
 function drawBug(g, phase, atk) {
   for (let i = 0; i < 3; i++) {
     const y = 44 + i * 5, o = ((i + phase) % 2 ? 3 : -3);
@@ -264,7 +264,7 @@ function drawBug(g, phase, atk) {
   ln(g, 28, 24, 20, 12 + phase * 2, '#23702b', 2); ln(g, 36, 24, 44, 12 - phase * 2, '#23702b', 2);
 }
 
-// Drone viral : sphère à spicules (façon virus) avec un œil
+// Viral drone: spiky sphere (virus-like) with a single eye
 function drawDrone(g, phase, atk) {
   const cx = 32, cy = 30;
   for (let i = 0; i < 12; i++) {
@@ -279,26 +279,26 @@ function drawDrone(g, phase, atk) {
   ell(g, cx, cy, 5, 5, atk ? '#ffee00' : '#ff1a1a');
   ell(g, cx, cy, 2, 2, '#000');
   g.fillStyle = '#fff'; g.fillRect(cx - 4, cy - 5, 2, 2);
-  // hélice/antigrav
+  // anti-grav thruster
   g.fillStyle = '#3cf'; g.fillRect(24, 52, 16, 2 + phase);
 }
 
-// Bot BSOD : robot avec un moniteur écran bleu en guise de tête
+// BSOD bot: robot with a blue-screen monitor for a head
 function drawBot(g, phase, atk) {
   const lo = phase ? 3 : -3;
-  // jambes
+  // legs
   g.fillStyle = '#3c4148'; g.fillRect(22, 44, 7, 18 + lo); g.fillRect(35, 44, 7, 18 - lo);
   g.fillStyle = '#1b1e22'; g.fillRect(20, 60 + lo, 10, 4 - Math.max(0, lo)); g.fillRect(33, 60 - lo, 10, 4 - Math.max(0, -lo));
-  // torse (tour de serveur)
+  // torso (server tower)
   g.fillStyle = '#50565e'; g.fillRect(18, 24, 28, 22);
   g.fillStyle = '#6a717a'; g.fillRect(18, 24, 28, 2);
   g.fillStyle = '#23262b'; for (let y = 29; y < 44; y += 3) g.fillRect(22, y, 12, 1);
   g.fillStyle = '#3dff6a'; g.fillRect(38, 30, 2, 2); g.fillStyle = '#ffb52e'; g.fillRect(38, 34, 2, 2);
-  // bras + arme
+  // arms + gun
   g.fillStyle = '#3c4148'; g.fillRect(10, 26, 7, 16); g.fillRect(47, 26, 7, 12);
   g.fillStyle = '#222'; g.fillRect(44, 36, 16, 6); g.fillRect(52, 34, 4, 2);
   if (atk) { ell(g, 60, 39, 5, 5, '#ffee55'); ell(g, 60, 39, 2.5, 2.5, '#fff'); }
-  // tête moniteur BSOD
+  // BSOD monitor head
   g.fillStyle = '#2b2f35'; g.fillRect(16, 2, 32, 22);
   g.fillStyle = '#1a5fd0'; g.fillRect(18, 4, 28, 17);
   g.fillStyle = '#fff'; g.font = 'bold 10px monospace'; g.fillText(':(', 21, 15);
@@ -306,7 +306,7 @@ function drawBot(g, phase, atk) {
   g.fillStyle = '#2b2f35'; g.fillRect(28, 21, 8, 4);
 }
 
-// Boss : cinq variantes (une par épisode), même carcasse, couleurs et emblème différents
+// Boss: five variants (one per episode), same body, different colors and emblem
 const BOSS_PAL = {
   botnet:     { body: '#1f4a24', light: '#2f6a34', dark: '#0f2612', head: '#9fdc8f', eye: '#3dff6a', shot: '#3dff6a', glyph: ['@', '#'] },
   miner:      { body: '#6a4a0f', light: '#8a661a', dark: '#3a2806', head: '#f2d27a', eye: '#ffb000', shot: '#ffb000', glyph: ['₿', 'Ξ'] },
@@ -320,15 +320,15 @@ function drawBoss(pal) {
     g.fillStyle = pal.dark; g.fillRect(14, 46, 12, 18 + Math.min(0, lo)); g.fillRect(38, 46, 12, 18 - Math.max(0, lo));
     g.fillStyle = pal.body; g.fillRect(10, 26, 44, 24);
     g.fillStyle = pal.light; g.fillRect(10, 26, 44, 3);
-    // cadenas
+    // padlock
     g.strokeStyle = '#e8c21a'; g.lineWidth = 3; g.beginPath(); g.arc(32, 35, 5, Math.PI, 0); g.stroke();
     g.fillStyle = '#e8c21a'; g.fillRect(25, 35, 14, 11);
     g.fillStyle = '#000'; g.fillRect(31, 38, 2, 5);
-    // bras-canons
+    // arm cannons
     g.fillStyle = pal.dark; g.fillRect(0, 28, 10, 20); g.fillRect(54, 28, 10, 20);
     g.fillStyle = '#111'; g.fillRect(1, 46, 8, 6); g.fillRect(55, 46, 8, 6);
     if (atk) { ell(g, 5, 55, 5, 5, pal.shot); ell(g, 59, 55, 5, 5, pal.shot); ell(g, 5, 55, 2, 2, '#fff'); ell(g, 59, 55, 2, 2, '#fff'); }
-    // crâne
+    // skull
     ell(g, 32, 14, 16, 14, pal.head);
     g.fillStyle = pal.head; g.fillRect(22, 18, 20, 10);
     ell(g, 25, 13, 5, 5, '#000'); ell(g, 39, 13, 5, 5, '#000');
@@ -339,25 +339,25 @@ function drawBoss(pal) {
   };
 }
 
-// Troll de forum : grosse brute verte avec une pancarte "FIRST!"
+// Forum troll: big green brute holding a "FIRST!" sign
 function drawTroll(g, phase, atk) {
   const lo = phase ? 3 : -3;
   g.fillStyle = '#3d5a2a'; g.fillRect(18, 46, 10, 18 + Math.min(0, lo)); g.fillRect(36, 46, 10, 18 - Math.max(0, lo));
   ell(g, 32, 38, 20, 16, '#5f8a3a');
   ell(g, 32, 42, 12, 9, '#7aa84c');
   g.fillStyle = '#5a3a1a'; g.fillRect(12, 48, 40, 6);
-  // bras + massue (clavier ergonomique cassé)
+  // arms + club (a broken ergonomic keyboard)
   ell(g, 11, 36, 6, 9, '#5f8a3a'); ell(g, 53, 36, 6, 9, '#5f8a3a');
   const cx = atk ? 60 : 56, cy = atk ? 8 : 16;
   g.save(); g.translate(cx, cy); g.rotate(atk ? 0.9 : 0.2);
   g.fillStyle = '#2c3038'; g.fillRect(-4, -2, 8, 30);
   g.fillStyle = '#d9dde2'; for (let y = 0; y < 26; y += 4) g.fillRect(-3, y, 6, 2);
   g.restore();
-  // pancarte
+  // sign
   g.fillStyle = '#6b4a2a'; g.fillRect(6, 10, 2, 28);
   g.fillStyle = '#f2f2e0'; g.fillRect(0, 6, 20, 11);
   g.fillStyle = '#c21d1d'; g.font = 'bold 6px monospace'; g.fillText('FIRST!', 1, 14);
-  // tête
+  // head
   ell(g, 32, 18, 12, 11, '#6f9a44');
   ell(g, 26, 16, 3, 3, '#fff'); ell(g, 38, 16, 3, 3, '#fff');
   g.fillStyle = '#c00'; g.fillRect(26, 16, 2, 2); g.fillRect(38, 16, 2, 2);
@@ -367,7 +367,7 @@ function drawTroll(g, phase, atk) {
   ell(g, 20, 12, 3, 5, '#6f9a44'); ell(g, 44, 12, 3, 5, '#6f9a44');
 }
 
-// Spammeur : enveloppe ambulante qui crache des @
+// Spammer: walking envelope spitting @ signs
 function drawSpammer(g, phase, atk) {
   const lo = phase ? 3 : -3;
   g.fillStyle = '#222'; g.fillRect(22, 48, 5, 16 + Math.min(0, lo)); g.fillRect(37, 48, 5, 16 - Math.max(0, lo));
@@ -376,7 +376,7 @@ function drawSpammer(g, phase, atk) {
   g.beginPath(); g.moveTo(10, 18); g.lineTo(32, 38); g.lineTo(54, 18); g.stroke();
   g.fillStyle = '#c21d1d'; g.fillRect(40, 21, 10, 8);
   g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('$', 43, 28);
-  // yeux + bouche
+  // eyes + mouth
   ell(g, 24, 30, 4, 4, '#fff'); ell(g, 40, 34, 4, 4, '#fff');
   ell(g, 24, 30, 2, 2, '#000'); ell(g, 40, 34, 2, 2, '#000');
   ell(g, 32, 44, 7, atk ? 5 : 2, '#600');
@@ -385,7 +385,7 @@ function drawSpammer(g, phase, atk) {
   g.fillStyle = '#e8c21a'; g.font = 'bold 5px monospace'; g.fillText('SPAM', 14, 26);
 }
 
-// Frame de mort générique : l'image "glitche" en tranches, puis tas de débris.
+// Generic death frames: the sprite "glitches" into slices, then a pile of debris.
 function glitchFrame(src, amount) {
   const c = newCanvas(64, 64), g = c.getContext('2d');
   const R = rng(amount * 7 + 3);
@@ -421,18 +421,18 @@ function buildEnemySprites(drawFn, debrisCols, seed) {
   };
 }
 
-// Écrou cagé : écrou carré M6 dans sa cage à ressort (ailettes)
+// Cage nut: square M6 nut inside its spring cage (wings)
 function drawCageNut(g, x, y, s, rot) {
   g.save(); g.translate(x, y); g.rotate(rot); g.scale(s, s);
   g.fillStyle = '#8f969e'; g.fillRect(-9, -7, 18, 14);             // cage
-  g.fillStyle = '#6a7078'; g.fillRect(-13, -4, 4, 8); g.fillRect(9, -4, 4, 8); // ailettes
-  g.fillStyle = '#c9ced4'; g.fillRect(-6, -6, 12, 12);              // écrou
+  g.fillStyle = '#6a7078'; g.fillRect(-13, -4, 4, 8); g.fillRect(9, -4, 4, 8); // wings
+  g.fillStyle = '#c9ced4'; g.fillRect(-6, -6, 12, 12);              // nut
   g.fillStyle = '#e8ecf0'; g.fillRect(-6, -6, 12, 2);
-  ell(g, 0, 0, 3.5, 3.5, '#2a2e34');                                // taraudage
+  ell(g, 0, 0, 3.5, 3.5, '#2a2e34');                                // threaded hole
   g.restore();
 }
 
-// Disque dur 3,5"
+// 3.5" hard drive
 function drawHdd(g, x, y, s, rot) {
   g.save(); g.translate(x, y); g.rotate(rot); g.scale(s, s);
   g.fillStyle = '#9aa1a8'; g.fillRect(-10, -7, 20, 14);
@@ -444,22 +444,22 @@ function drawHdd(g, x, y, s, rot) {
   g.restore();
 }
 
-/* --------------------------------------------- racks spéciaux (hyperviseurs) */
+/* ------------------------------------------ special racks (hypervisors) */
 
 function specialRack(brand) {
   return (g, R, led, L) => {
     drawRack('R')(g, R, led, L);
     const b = BRANDS[brand];
-    // bandeau de marque éclairé
+    // lit brand banner
     led(4, 3, 56, 24, b.bg);
     b.logo(g);
     g.fillStyle = b.bg; g.fillRect(0, 60, 64, 4);
-    // LEDs aux couleurs de la marque sur les serveurs
+    // brand-colored LEDs on the servers
     for (let y = 31; y < 58; y += 6) led(46 + ((y / 6) % 2) * 4, y, 2, 1, L() < 0.7 ? b.led : '#1a1a1a');
   };
 }
 
-// Écrit un texte en réduisant la police jusqu'à ce qu'il tienne dans maxW ; renvoie sa largeur.
+// Draws text, shrinking the font until it fits in maxW; returns its width.
 function fitText(g, text, x, y, maxW, size, weight = 'bold') {
   let sz = size;
   do { g.font = `${weight} ${sz}px sans-serif`; sz -= 0.5; } while (g.measureText(text).width > maxW && sz > 3);
@@ -468,7 +468,7 @@ function fitText(g, text, x, y, maxW, size, weight = 'bold') {
 }
 
 const BRANDS = {
-  // Broadcom (VMware ESXi) : rouge Broadcom, pastille ronde à l'onde blanche
+  // Broadcom (VMware ESXi): Broadcom red, round badge with a white pulse
   esxi: { name: 'BROADCOM ESXi', bg: '#1c1c1c', led: '#cc092f', logo(g) {
     ell(g, 14, 13, 8, 8, '#cc092f');
     g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath();
@@ -476,7 +476,7 @@ const BRANDS = {
     g.fillStyle = '#fff'; fitText(g, 'BROADCOM', 24, 12, 34, 7);
     g.fillStyle = '#cc092f'; fitText(g, 'ESXi', 30, 23, 24, 9);
   } },
-  // Proxmox : le "X" orange et noir, fond clair
+  // Proxmox: the orange and black "X" on a light background
   proxmox: { name: 'PROXMOX VE', bg: '#f2f2f2', led: '#e57000', logo(g) {
     g.lineWidth = 3.5;
     g.strokeStyle = '#e57000'; g.beginPath(); g.moveTo(7, 6); g.lineTo(19, 20); g.stroke();
@@ -492,7 +492,7 @@ const BRANDS = {
     g.fillStyle = '#fff'; fitText(g, 'VATES', 25, 13, 32, 9);
     g.fillStyle = '#2f9bff'; fitText(g, 'XCP-ng', 26, 22, 32, 7);
   } },
-  // Hyper-V : les quatre carrés Microsoft
+  // Hyper-V: the four Microsoft squares
   hyperv: { name: 'MICROSOFT HYPER-V', bg: '#1b1b1b', led: '#00a4ef', logo(g) {
     g.fillStyle = '#f25022'; g.fillRect(6, 6, 7, 7);
     g.fillStyle = '#7fba00'; g.fillRect(14, 6, 7, 7);
@@ -500,7 +500,7 @@ const BRANDS = {
     g.fillStyle = '#ffb900'; g.fillRect(14, 14, 7, 7);
     g.fillStyle = '#fff'; fitText(g, 'Hyper-V', 24, 17, 34, 9);
   } },
-  // Nutanix : fond anthracite, logotype blanc, "X" violet Iris
+  // Nutanix: charcoal background, white wordmark, Iris purple "X"
   nutanix: { name: 'NUTANIX', bg: '#131313', led: '#7855fa', logo(g) {
     g.fillStyle = '#fff'; const nw = fitText(g, 'NUTANI', 5, 16, 42, 11);
     const x0 = 6 + nw;
@@ -512,11 +512,11 @@ const BRANDS = {
 };
 const SPECIAL_TILES = { '3': 'esxi', '4': 'proxmox', '5': 'vates', '6': 'hyperv', '7': 'nutanix' };
 
-/* objets */
+/* items */
 function drawItem(type) {
   return (g) => {
     switch (type) {
-      case '+': // café
+      case '+': // coffee
         g.fillStyle = '#eee'; g.fillRect(24, 46, 14, 16);
         g.fillStyle = '#6b3b1a'; g.fillRect(25, 46, 12, 3);
         g.strokeStyle = '#eee'; g.lineWidth = 2; g.beginPath(); g.arc(39, 53, 4, -Math.PI / 2, Math.PI / 2); g.stroke();
@@ -524,7 +524,7 @@ function drawItem(type) {
         g.strokeStyle = 'rgba(230,230,230,0.9)'; g.lineWidth = 1;
         g.beginPath(); g.moveTo(28, 44); g.quadraticCurveTo(26, 40, 29, 36); g.moveTo(33, 44); g.quadraticCurveTo(35, 40, 32, 35); g.stroke();
         break;
-      case 'H': // kit de secours
+      case 'H': // medkit
         g.fillStyle = '#f2f2f2'; g.fillRect(18, 44, 28, 20);
         g.fillStyle = '#bbb'; g.fillRect(18, 44, 28, 2);
         g.fillStyle = '#d81e1e'; g.fillRect(29, 47, 6, 14); g.fillRect(25, 51, 14, 6);
@@ -535,19 +535,19 @@ function drawItem(type) {
         for (let y = 38; y < 58; y += 5) for (let x = 20 + ((y / 5) % 2) * 4; x < 44; x += 8) g.fillRect(x, y, 6, 3);
         g.fillStyle = '#ffdf40'; g.beginPath(); g.moveTo(32, 36); g.lineTo(37, 46); g.lineTo(32, 43); g.lineTo(27, 46); g.fill();
         break;
-      case 'a': // boîte d'écrous cagés
+      case 'a': // box of cage nuts
         g.fillStyle = '#6b4a2a'; g.fillRect(16, 50, 32, 14);
         g.fillStyle = '#8a6438'; g.fillRect(16, 50, 32, 3);
         for (let i = 0; i < 4; i++) drawCageNut(g, 21 + i * 7, 47, 0.45, i * 0.4);
         g.fillStyle = '#fff'; g.font = '5px monospace'; g.fillText('M6 x50', 19, 61);
         break;
-      case 's': // trames jumbo
+      case 's': // jumbo frames
         g.fillStyle = '#7a1a1a'; g.fillRect(18, 48, 28, 16);
         g.fillStyle = '#a82a2a'; g.fillRect(18, 48, 28, 3);
         g.fillStyle = '#e03030'; for (let x = 21; x < 44; x += 5) g.fillRect(x, 42, 3, 7);
         g.fillStyle = '#e8c21a'; for (let x = 21; x < 44; x += 5) g.fillRect(x, 47, 3, 2);
         break;
-      case 'c': // cellule d'énergie
+      case 'c': // energy cell
         g.fillStyle = '#2a2f35'; g.fillRect(22, 40, 20, 24);
         g.fillStyle = '#3dff6a'; g.fillRect(25, 44, 14, 16);
         g.fillStyle = '#b6ffbf'; g.fillRect(25, 44, 14, 3);
@@ -562,23 +562,23 @@ function drawItem(type) {
         g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); g.moveTo(32, 44); g.lineTo(28, 34); g.lineTo(36, 34); g.closePath(); g.stroke();
         break;
       }
-      case 'F': // fusil à paquets
+      case 'F': // packet shotgun
         g.fillStyle = '#3a2a1a'; g.fillRect(8, 52, 16, 6);
         g.fillStyle = '#555c64'; g.fillRect(22, 50, 34, 4); g.fillRect(22, 55, 34, 3);
         g.fillStyle = '#2a2e34'; g.fillRect(26, 58, 12, 3);
         break;
-      case 'M': // mitrailleuse
+      case 'M': // Gatling riveter
         g.fillStyle = '#444a52'; g.fillRect(10, 48, 22, 12);
         for (let i = 0; i < 4; i++) { g.fillStyle = i % 2 ? '#6a717a' : '#555c64'; g.fillRect(30, 49 + i * 3, 26, 2); }
         g.fillStyle = '#e8c21a'; g.fillRect(14, 58, 10, 5);
         break;
-      case 'L': // canon overclock
+      case 'L': // Overclock cannon
         g.fillStyle = '#2a2f35'; g.fillRect(10, 46, 40, 14);
         g.fillStyle = '#3cf'; g.fillRect(14, 50, 24, 6);
         g.fillStyle = '#9ef'; g.fillRect(14, 50, 24, 2);
         g.fillStyle = '#555'; g.fillRect(48, 49, 8, 8);
         break;
-      case 'x': // palette de serveurs en carton
+      case 'x': // pallet of boxed servers
         g.fillStyle = '#6b4a2a'; g.fillRect(6, 58, 52, 6);
         g.fillStyle = '#b58a55'; g.fillRect(8, 22, 48, 36);
         g.fillStyle = '#9a7445'; g.fillRect(8, 38, 48, 2); g.fillRect(31, 22, 2, 36);
@@ -586,31 +586,31 @@ function drawItem(type) {
         g.fillStyle = '#222'; g.font = 'bold 6px monospace'; g.fillText('FRAGILE', 12, 33); g.fillText('1U x4', 36, 50);
         g.strokeStyle = '#222'; g.beginPath(); g.moveTo(14, 44); g.lineTo(14, 52); g.moveTo(12, 46); g.lineTo(14, 44); g.lineTo(16, 46); g.stroke();
         break;
-      case 'j': // boisson énergisante
+      case 'j': // energy drink
         g.fillStyle = '#1a1a1a'; g.fillRect(26, 38, 12, 26);
         g.fillStyle = '#3dff6a'; g.fillRect(26, 44, 12, 12);
         g.fillStyle = '#111'; g.font = 'bold 7px monospace'; g.fillText('24', 27, 53);
         g.fillStyle = '#aaa'; g.fillRect(27, 36, 10, 2);
         break;
-      case 'k': // modules SFP (roquettes)
+      case 'k': // SFP modules (rockets)
         g.fillStyle = '#2a2e34'; g.fillRect(16, 48, 32, 16);
         g.fillStyle = '#454b53'; g.fillRect(16, 48, 32, 3);
         for (let x = 19; x < 46; x += 7) { g.fillStyle = '#c9cdd1'; g.fillRect(x, 38, 5, 12); g.fillStyle = '#1f58d6'; g.fillRect(x, 36, 5, 3); }
         g.fillStyle = '#e8c21a'; g.font = '5px monospace'; g.fillText('SFP+', 24, 60);
         break;
-      case 'g': // disque dur
+      case 'g': // hard drive
         drawHdd(g, 32, 50, 1.3, 0);
         break;
-      case 'K': // bazooka SFP
+      case 'K': // SFP bazooka
         g.fillStyle = '#3a4a2a'; g.fillRect(6, 48, 52, 9);
         g.fillStyle = '#4c6038'; g.fillRect(6, 48, 52, 2);
         g.fillStyle = '#222'; g.fillRect(24, 57, 6, 6); g.fillRect(36, 57, 4, 5);
         g.fillStyle = '#c9cdd1'; g.fillRect(56, 49, 6, 7); g.fillStyle = '#1f58d6'; g.fillRect(58, 47, 3, 2);
         break;
-      case 'G': // pile de disques durs
+      case 'G': // stack of hard drives
         drawHdd(g, 32, 60, 1.4, 0); drawHdd(g, 30, 52, 1.4, 0); drawHdd(g, 33, 44, 1.4, 0);
         break;
-      case 'Y': // compresseur ZIP
+      case 'Y': // ZIP compressor
         g.fillStyle = '#6a4ae0'; g.fillRect(10, 44, 44, 14);
         g.fillStyle = '#8a6aff'; g.fillRect(10, 44, 44, 3);
         g.fillStyle = '#e8c21a'; g.fillRect(22, 44, 6, 14);
@@ -618,7 +618,7 @@ function drawItem(type) {
         g.fillStyle = '#3dff6a'; g.fillRect(52, 48, 8, 6);
         g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('ZIP', 33, 54);
         break;
-      case 'B': // batterie d'onduleur
+      case 'B': // UPS battery
         g.fillStyle = '#1a1c20'; g.fillRect(14, 22, 36, 42);
         g.fillStyle = '#2c3038'; g.fillRect(14, 22, 36, 4);
         g.fillStyle = '#f2c230'; g.fillRect(14, 36, 36, 12);
@@ -626,7 +626,7 @@ function drawItem(type) {
         g.fillStyle = '#c21d1d'; g.fillRect(18, 18, 6, 4); g.fillStyle = '#222'; g.fillRect(40, 18, 6, 4);
         g.fillStyle = '#3dff6a'; g.fillRect(18, 54, 4, 2); g.fillRect(24, 54, 4, 2); g.fillRect(30, 54, 4, 2);
         break;
-      case 'f': // fontaine à eau
+      case 'f': // water cooler
         g.fillStyle = '#d8dde3'; g.fillRect(22, 36, 20, 28);
         g.fillStyle = '#aab'; g.fillRect(22, 36, 20, 2);
         g.fillStyle = 'rgba(80,160,255,0.95)'; g.beginPath(); g.ellipse(32, 24, 11, 13, 0, 0, Math.PI * 2); g.fill();
@@ -634,7 +634,7 @@ function drawItem(type) {
         g.fillStyle = '#1f58d6'; g.fillRect(28, 34, 8, 3);
         g.fillStyle = '#c21d1d'; g.fillRect(26, 44, 3, 3); g.fillStyle = '#1f58d6'; g.fillRect(35, 44, 3, 3);
         break;
-      case 'e': // extincteur
+      case 'e': // fire extinguisher
         g.fillStyle = '#b01515'; g.fillRect(28, 38, 9, 26);
         g.fillStyle = '#d82a2a'; g.fillRect(28, 38, 3, 26);
         g.fillStyle = '#222'; g.fillRect(29, 33, 7, 5); g.fillRect(36, 34, 6, 2); g.fillRect(40, 36, 2, 10);
@@ -663,7 +663,7 @@ function sparkSprite(cols, n, seed) {
   });
 }
 
-/* ------------------------------------------------------------ assemblage */
+/* -------------------------------------------------------------- assembly */
 
 const Assets = {};
 
@@ -690,7 +690,7 @@ function buildAssets() {
     'X': variants(drawExit, 1, 2),
   };
   for (const [ch, brand] of Object.entries(SPECIAL_TILES)) Assets.walls[ch] = variants(specialRack(brand), 1, 2);
-  // béton (et faux murs secrets) aux couleurs de chaque épisode
+  // concrete (and secret fake walls) in each episode's colors
   Assets.concrete = [0, 1, 2, 3, 4].map((ep) => variants(concrete(ep), 2, 1));
   Assets.floor = [makeTexture(drawFloor(false), 5), makeTexture(drawFloor(true), 6)];
   Assets.ceil = [makeTexture(drawCeiling(false), 7), makeTexture(drawCeiling(true), 8)];
