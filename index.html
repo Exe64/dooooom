@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DOOOOOM — L'enfer du datacenter</title>
+  <meta name="description" content="FPS rétro dans le navigateur, façon Doom, dont les niveaux sont des datacenters.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --green: #3dff6a;
+      --red: #ff4d2e;
+      --bg: #050607;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+      color: #d8dde3; font-family: "Press Start 2P", monospace;
+    }
+    body { display: flex; align-items: center; justify-content: center; }
+    #view { display: block; image-rendering: pixelated; background: #000; cursor: crosshair; }
+    #overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(0,20,8,0.72), rgba(0,0,0,0.92));
+      padding: 16px; overflow-y: auto;
+    }
+    #overlay.hidden { display: none; }
+    #panel {
+      max-width: 720px; width: 100%; text-align: center; margin: auto;
+      border: 2px solid #1f4f2a; background: rgba(4,10,6,0.85);
+      padding: 28px 24px; box-shadow: 0 0 40px rgba(61,255,106,0.12), inset 0 0 60px rgba(0,0,0,0.6);
+    }
+    .logo {
+      font-size: clamp(28px, 7vw, 64px); margin: 0 0 12px; color: var(--red); letter-spacing: 2px;
+      text-shadow: 3px 3px 0 #5a0d00, 0 0 18px rgba(255,77,46,0.5);
+    }
+    h1.dead { color: var(--red); font-size: clamp(18px, 4vw, 32px); text-shadow: 0 0 14px rgba(255,0,0,0.5); }
+    h2 { color: var(--green); font-size: clamp(11px, 2.2vw, 16px); line-height: 1.6; margin: 0 0 18px; }
+    .ok { color: #ffe14a; }
+    .story { font-size: 10px; line-height: 2; color: #b8c2cc; margin: 0 auto 22px; max-width: 600px; }
+    .story b { color: var(--green); }
+    button {
+      font: inherit; font-size: 10px; color: #d8dde3; background: #16201a; border: 2px solid #2e6b3a;
+      padding: 10px 16px; margin: 6px; cursor: pointer; text-transform: uppercase;
+    }
+    button:hover, button:focus-visible { background: #2e6b3a; color: #fff; outline: none; }
+    button.big { font-size: 13px; padding: 14px 24px; color: #fff; background: #7a1a0d; border-color: var(--red); }
+    button.big:hover { background: var(--red); }
+    table.ctl { margin: 22px auto 0; font-size: 8px; line-height: 1.9; border-collapse: collapse; text-align: left; }
+    table.ctl td { padding: 2px 10px; }
+    table.ctl td:first-child { color: #ffe14a; text-align: right; }
+    table.stats { margin: 0 auto 22px; font-size: 12px; line-height: 2.2; }
+    table.stats td { padding: 0 16px; }
+    table.stats td:first-child { color: #9aa3ad; text-align: left; }
+    table.stats td:last-child { color: var(--red); text-align: right; }
+    .hint { font-size: 7px; color: #6b7178; margin-top: 18px; }
+    .sens { display: block; font-size: 8px; margin-top: 16px; color: #9aa3ad; }
+    .sens input { vertical-align: middle; margin-left: 8px; }
+    noscript { color: #fff; }
+  </style>
+</head>
+<body>
+  <canvas id="view" width="960" height="540"></canvas>
+  <div id="overlay"><div id="panel"><h2>CHARGEMENT DU DATACENTER...</h2></div></div>
+  <noscript>Ce jeu nécessite JavaScript.</noscript>
+  <script src="js/levels.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/textures.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
