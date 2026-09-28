@@ -1125,10 +1125,6 @@ function render() {
     }
   }
   sctx.putImageData(img, 0, 0);
-  drawWeapon(sctx);
-  sctx.fillStyle = 'rgba(120,255,140,0.8)';
-  sctx.fillRect(W / 2 - 4, HORIZ, 3, 1); sctx.fillRect(W / 2 + 2, HORIZ, 3, 1);
-  sctx.fillRect(W / 2, HORIZ - 4, 1, 3); sctx.fillRect(W / 2, HORIZ + 2, 1, 3);
 }
 
 // Picks the rotation frame of a volumetric prop according to where the player stands.
@@ -1179,142 +1175,49 @@ function drawFlash(g, x, y, r, inner, outer) {
   ell(g, x, y, r * 0.4, r * 0.35, inner);
 }
 
-function drawHand(g, x, y, s = 1) {
-  g.fillStyle = '#5a4a2a'; g.fillRect(x - 16 * s, y, 40 * s, 60);           // sleeve (the admin's khaki t-shirt)
-  ell(g, x, y, 18 * s, 13 * s, '#d9a47a');
-  g.fillStyle = '#c08a62'; g.fillRect(x - 12 * s, y - 2, 24 * s, 2);
-}
+const CAN_FILTER = typeof CanvasRenderingContext2D !== 'undefined' && 'filter' in CanvasRenderingContext2D.prototype;
 
-function drawWeapon(g) {
+// Draws the weapon held in hand on the high-resolution canvas (logical coordinates).
+// The models are pre-rendered by js/weapons.js; here we only pick the pose and
+// add bobbing, recoil, lighting and the muzzle flash.
+function drawWeapon(g, shx, shy) {
   if (P.dead) return;
-  const t = P.wAnim;
-  const bx = Math.cos(P.bobPhase) * 8 * P.bobAmt;
-  const by = Math.abs(Math.sin(P.bobPhase)) * 6 * P.bobAmt + P.raise * 90;
-  const cx = W / 2 + bx, base = VH + by;
-  const flash = P.flashT > 0;
-  g.save();
+  const A = Assets.weapons, t = P.wAnim;
+  const bx = Math.cos(P.bobPhase) * 8 * P.bobAmt + shx;
+  const by = Math.abs(Math.sin(P.bobPhase)) * 6 * P.bobAmt + P.raise * 120 + shy;
+  let art, dx = 0, dy = 0, rot = 0, flash = null;
   switch (INV.cur) {
     case 0: {
       const s = t > 0 ? Math.sin(t * Math.PI) : 0;
-      g.translate(cx + 80 - s * 100, base - 30 - s * 45);
-      g.rotate(-0.35 + s * 0.8);
-      g.fillStyle = '#15171b'; g.fillRect(-72, -18, 144, 36);
-      g.fillStyle = '#2c3038'; g.fillRect(-70, -16, 140, 32);
-      for (let r = 0; r < 4; r++) for (let k = 0; k < 15; k++) {
-        g.fillStyle = (k + r * 3) % 11 === 0 ? '#e8741a' : '#d9dde2';
-        g.fillRect(-66 + k * 8.8 + (r % 2) * 2, -14 + r * 7, 7, 5);
-        g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(-66 + k * 8.8 + (r % 2) * 2, -10 + r * 7, 7, 1);
-      }
-      g.fillStyle = `hsl(${(performance.now() / 8) % 360},100%,60%)`; g.fillRect(-70, 14, 140, 2);
-      g.fillStyle = '#5a4a2a'; g.fillRect(34, 16, 40, 60);
-      ell(g, 44, 14, 20, 13, '#d9a47a');
+      art = A.keyboard; dx = -s * 120; dy = -s * 40; rot = -s * 0.7;
       break;
     }
-    case 1: { // cage nut pistol
-      g.translate(cx + 10, base + t * 18);
-      g.rotate(-t * 0.15);
-      drawHand(g, 0, -28);
-      g.fillStyle = '#2b2f35'; g.fillRect(-12, -100, 24, 72);
-      g.fillStyle = '#e8741a'; g.fillRect(-12, -100, 24, 32);           // orange nail-gun style body
-      g.fillStyle = '#ff9a3a'; g.fillRect(-12, -100, 4, 32);
-      g.fillStyle = '#111'; g.fillRect(-6, -104, 12, 6);
-      // tubular nut magazine
-      g.fillStyle = '#555c64'; g.fillRect(14, -96, 10, 50);
-      for (let i = 0; i < 5; i++) drawCageNut(g, 19, -90 + i * 10, 0.35, 0);
-      if (t < 0.6) drawCageNut(g, 0, -108, 0.55, 0);
-      if (flash) drawFlash(g, 0, -112, 20, '#fff6b0', '#ffb040');
-      break;
-    }
-    case 2: {
-      const k = t > 0.5 ? (1 - t) * 2 : t * 2;
-      g.translate(cx, base + t * 20);
-      drawHand(g, -30, -30 + k * 10, 0.9);
-      drawHand(g, 30, -20);
-      g.fillStyle = '#6b4a2a'; g.fillRect(-26, -64, 52, 64);
-      g.fillStyle = '#7d5a35'; g.fillRect(-26, -64, 52, 5);
-      g.fillStyle = '#3a3f46'; g.fillRect(-22, -122, 20, 64); g.fillRect(2, -122, 20, 64);
-      g.fillStyle = '#5d656f'; g.fillRect(-22, -122, 5, 64); g.fillRect(2, -122, 5, 64);
-      ell(g, -12, -122, 8, 5, '#0a0a0a'); ell(g, 12, -122, 8, 5, '#0a0a0a');
-      g.fillStyle = '#6b4a2a'; g.fillRect(-24, -88 + k * 16, 48, 14);
-      if (flash) drawFlash(g, 0, -134, 40, '#fff6b0', '#ff7a1a');
-      break;
-    }
-    case 3: { // Gatling riveter
-      g.translate(cx, base + t * 6);
-      drawHand(g, -34, -24);
-      g.fillStyle = '#3a3f46'; g.fillRect(-34, -72, 68, 72);
-      g.fillStyle = '#50565e'; g.fillRect(-34, -72, 68, 6);
-      // nut hopper
-      g.fillStyle = '#6b4a2a'; g.fillRect(22, -66, 26, 30);
-      for (let i = 0; i < 6; i++) drawCageNut(g, 28 + (i % 3) * 7, -58 + ((i / 3) | 0) * 9, 0.3, i);
-      const bars = [];
-      for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2 + P.spin; bars.push({ x: Math.cos(a) * 14, d: Math.sin(a) }); }
-      bars.sort((a, b) => a.d - b.d);
-      for (const b of bars) {
-        const l = 70 + b.d * 30 | 0;
-        g.fillStyle = `rgb(${l},${l + 6},${l + 14})`;
-        g.fillRect(b.x - 4, -132, 8, 62);
-      }
-      g.fillStyle = '#e8741a'; g.fillRect(-22, -110, 44, 6); g.fillRect(-22, -80, 44, 6);
-      if (flash) drawFlash(g, randi(-8, 8), -140, 26, '#fff6b0', '#ffb040');
-      break;
-    }
-    case 4: { // SFP bazooka (on the right shoulder)
-      g.translate(cx + 40, base + t * 22);
-      drawHand(g, -10, -30);
-      g.fillStyle = '#3a4a2a'; g.beginPath(); g.moveTo(-6, 0); g.lineTo(60, 0); g.lineTo(28, -118); g.lineTo(4, -118); g.closePath(); g.fill();
-      g.fillStyle = '#4c6038'; g.beginPath(); g.moveTo(-6, 0); g.lineTo(10, 0); g.lineTo(10, -118); g.lineTo(4, -118); g.closePath(); g.fill();
-      ell(g, 16, -118, 13, 7, '#1a1a1a');
-      if (t < 0.4) { g.fillStyle = '#c9cdd1'; g.fillRect(9, -128, 14, 10); g.fillStyle = '#1f58d6'; g.fillRect(9, -130, 14, 3); }
-      g.fillStyle = '#e8c21a'; g.fillRect(12, -70, 30, 4);
-      if (flash) drawFlash(g, 16, -128, 34, '#fff6b0', '#ff7a1a');
-      break;
-    }
-    case 5: { // hard drive to throw
-      const s = t > 0 ? Math.sin(t * Math.PI) : 0;
-      g.translate(cx + 50 - s * 60, base - 20 - s * 70);
-      drawHand(g, 0, 0);
-      if (t === 0 || t < 0.2) {
-        g.save(); g.translate(0, -16); g.rotate(-0.2);
-        g.fillStyle = '#9aa1a8'; g.fillRect(-24, -34, 48, 34);
-        g.fillStyle = '#c9ced4'; g.fillRect(-24, -34, 48, 4);
-        ell(g, -4, -17, 12, 12, '#b4bac1'); ell(g, -4, -17, 3, 3, '#5a6068');
-        g.fillStyle = '#fff'; g.fillRect(10, -30, 12, 18); g.fillStyle = '#c21d1d'; g.fillRect(10, -30, 12, 4);
-        g.fillStyle = '#111'; g.font = 'bold 4px monospace'; g.fillText('4 TB', 11, -18);
-        g.restore();
-      }
-      break;
-    }
-    case 6: { // ZIP compressor
-      g.translate(cx, base + t * 10);
-      drawHand(g, -30, -20); drawHand(g, 30, -20);
-      g.fillStyle = '#4a34a8'; g.fillRect(-36, -80, 72, 80);
-      g.fillStyle = '#6a4ae0'; g.fillRect(-36, -80, 72, 6);
-      g.fillStyle = '#e8c21a'; g.fillRect(-6, -80, 12, 80);
-      for (let y = -76; y < 0; y += 5) { g.fillStyle = '#8a7a2a'; g.fillRect(-4, y, 8, 2); }
-      g.fillStyle = '#0a1a0a'; g.fillRect(12, -64, 20, 14);
-      g.fillStyle = '#3dff6a'; g.font = 'bold 6px monospace'; g.fillText('.ZIP', 13, -54);
-      ell(g, 0, -86, 10, 6, t > 0.5 ? '#fff' : '#b6a4ff');
-      if (t > 0.5) drawFlash(g, 0, -92, 22, '#ffffff', '#8a6aff');
-      break;
-    }
-    case 7: {
-      g.translate(cx, base + t * 8);
-      drawHand(g, -38, -22);
-      drawHand(g, 38, -22);
-      g.fillStyle = '#23272d'; g.fillRect(-40, -84, 80, 84);
-      g.fillStyle = '#353b43'; g.fillRect(-40, -84, 80, 6);
+    case 1: art = A.pistol[t > 0.4 ? 1 : 0]; dy = t * 14; rot = t * 0.05; flash = ['#fff6b0', '#ffb040', 16]; break;
+    case 2: art = A.shotgun[t > 0.15 && t < 0.75 ? 1 : 0]; dy = t * 20; flash = ['#fff6b0', '#ff7a1a', 30]; break;
+    case 3: art = A.gatling[Math.floor(P.spin / (Math.PI / 12)) % 4]; dy = t * 6 + (firing ? rand(-1, 1) : 0); dx = firing ? rand(-1, 1) : 0; flash = ['#fff6b0', '#ffb040', 20]; break;
+    case 4: art = A.bazooka[t > 0.3 ? 1 : 0]; dy = t * 24; flash = ['#fff6b0', '#ff7a1a', 30]; break;
+    case 5: art = A.hdd[t > 0.25 ? 1 : 0]; dy = t > 0 && t <= 0.25 ? (0.25 - t) * 4 * 70 : 0; break;
+    case 6: art = A.zip; dy = t * 10; break;
+    default: art = A.plasma; dy = t * 8; flash = ['#ffffff', '#3cf', 24]; break;
+  }
+  const lum = Math.min(1.2, L.def.ambient * 0.85 + 0.2 + (P.flashT > 0 ? 0.35 : 0));
+  g.save();
+  g.translate(bx + dx, by + dy);
+  if (rot) { const px = art.x + art.w * 0.85, py = art.y + art.h; g.translate(px, py); g.rotate(rot); g.translate(-px, -py); }
+  if (CAN_FILTER && Math.abs(lum - 1) > 0.02) g.filter = `brightness(${lum.toFixed(2)})`;
+  g.drawImage(art.c, art.x, art.y, art.w, art.h);
+  g.filter = 'none';
+  const m = art.muzzle;
+  if (m) {
+    if (INV.cur === 7 || INV.cur === 6) {
+      // energy weapons: pulsing glow at the nozzle
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 90);
-      for (let i = 0; i < 4; i++) {
-        g.fillStyle = `rgba(60,200,255,${0.4 + pulse * 0.6})`;
-        g.fillRect(-30, -74 + i * 16, 60, 6);
-        g.fillStyle = '#bff'; g.fillRect(-30, -74 + i * 16, 60, 1);
-      }
-      g.fillStyle = '#15171b'; g.fillRect(-14, -110, 28, 28);
-      ell(g, 0, -110, 12, 7, flash ? '#fff' : '#1a7de1');
-      if (flash) drawFlash(g, 0, -118, 30, '#ffffff', '#3cf');
-      break;
+      g.globalAlpha = 0.35 + pulse * 0.35 + (t > 0.3 ? 0.3 : 0);
+      ell(g, m[0], m[1], 5 + pulse * 2, 4 + pulse * 2, INV.cur === 7 ? '#8ef' : '#c6b6ff');
+      g.globalAlpha = 1;
+      if (INV.cur === 6 && t > 0.5) drawFlash(g, m[0], m[1], 18, '#ffffff', '#8a6aff');
     }
+    if (flash && P.flashT > 0) drawFlash(g, m[0] + rand(-1, 1), m[1] - 2, flash[2], flash[0], flash[1]);
   }
   g.restore();
 }
@@ -1461,6 +1364,12 @@ function present() {
   vctx.drawImage(scr, sh ? rand(-sh, sh) : 0, sh ? rand(-sh, sh) : 0, W * K, VH * K);
   vctx.setTransform(K, 0, 0, K, 0, 0);
   const g = vctx;
+  g.save(); g.beginPath(); g.rect(0, 0, W, VH); g.clip();
+  drawWeapon(g, sh ? rand(-sh, sh) / K : 0, sh ? rand(-sh, sh) / K : 0);
+  g.restore();
+  g.fillStyle = 'rgba(120,255,140,0.85)';
+  g.fillRect(W / 2 - 5, HORIZ - 0.5, 3.5, 1); g.fillRect(W / 2 + 1.5, HORIZ - 0.5, 3.5, 1);
+  g.fillRect(W / 2 - 0.5, HORIZ - 5, 1, 3.5); g.fillRect(W / 2 - 0.5, HORIZ + 1.5, 1, 3.5);
   if (showMap) drawMap(g);
   if (P.hurtT > 0) { g.fillStyle = `rgba(255,0,0,${P.hurtT * 0.8})`; g.fillRect(0, 0, W, VH); }
   if (P.pickT > 0) { g.fillStyle = `rgba(255,230,80,${P.pickT * 0.5})`; g.fillRect(0, 0, W, VH); }
@@ -1808,6 +1717,7 @@ function boot() {
     if (localStorage.getItem('dukenutanix.voice') === '0') voiceOn = false;
   } catch (e) { /* ignored */ }
   buildAssets();
+  Assets.weapons = WeaponArt.build();
   showTitle();
   requestAnimationFrame(frame);
   // debug hook for automated tests

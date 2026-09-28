@@ -15,6 +15,8 @@ The look is deliberately pixelated:
 - **Textures** are 128x128, so logos, cabling and labels stay readable.
 - **Props** such as pallets of servers, UPS batteries and water coolers are small 3D boxes, pre-rendered from 16 angles like Doom's rotating sprites. They show their real faces as you walk around them.
 - **Enemies and items** get a dark outline so they stand out from the racks.
+- **Weapons in hand** are small 3D models (boxes and tubes) rendered in perspective with per-face lighting,
+  then pixelated and outlined. They are drawn at twice the resolution of the 3D view, dim in dark areas and light up when firing.
 
 ## Play
 
@@ -124,6 +126,7 @@ docs/banner.jpg          README banner
 js/levelgen.js           procedural generator + map validation
 js/levels.js             episodes, level names, hand-drawn levels, difficulty settings
 js/textures.js           textures, rack logos, sprites
+js/weapons.js            first-person weapon models and their pre-rendering
 js/audio.js              synthesized sound effects
 js/game.js               raycasting engine, AI, weapons, HUD, save game, game loop
 tools/validate-levels.js checks all 50 levels
