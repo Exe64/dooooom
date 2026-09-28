@@ -291,6 +291,15 @@ const LevelGen = (() => {
       if (!placed) return null;
     }
 
+    if (spec.miniboss) {
+      // the mini-boss waits in the exit room, as close to its center as possible
+      const c = cellsOf(exitRoom);
+      const cx = (exitRoom.x0 + exitRoom.x1) / 2, cy = (exitRoom.y0 + exitRoom.y1) / 2;
+      c.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy));
+      if (!c.length) return null;
+      g[c[0][1]][c[0][0]] = 'V';
+    }
+
     const others = rooms.filter((r) => r !== start && r !== secret);
     const weighted = [];
     for (const r of others) { const n = Math.max(1, Math.round((r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1) / 25)); for (let i = 0; i < n; i++) weighted.push(r); }

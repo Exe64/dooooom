@@ -1,11 +1,14 @@
 'use strict';
 /*
- * All visuals are generated on the fly on 64x64 canvases:
+ * All visuals are generated on the fly on canvases:
  * wall textures (racks, CRAC units, doors...), floors, ceilings and sprites.
+ * Drawing functions work in a 64x64 design space; canvases are 128x128 so that
+ * text, logos, cables and curves get twice the detail while staying pixelated.
  * Each texture is converted to a Uint32Array (little-endian ABGR) together with
  * an "emissive" mask (pixels not darkened by distance: LEDs, screens).
  */
-const TEX = 64;
+const TEX = 128;          // texture / sprite resolution in texels
+const TS = TEX / 64;      // design space to texel scale
 
 function rng(seed) {
   let s = (seed * 2654435761) >>> 0 || 1;
@@ -21,11 +24,14 @@ function newCanvas(w, h) {
 function makeTexture(draw, seed = 1, ledSeed = 1) {
   const c = newCanvas(TEX, TEX);
   const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.scale(TS, TS);
   const em = new Uint8Array(TEX * TEX);
   const R = rng(seed), L = rng(ledSeed);
   const led = (x, y, w, h, col) => {
     g.fillStyle = col; g.fillRect(x, y, w, h);
-    for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++)
+    const x0 = Math.floor(x * TS), x1 = Math.ceil((x + w) * TS), y0 = Math.floor(y * TS), y1 = Math.ceil((y + h) * TS);
+    for (let j = y0; j < y1; j++) for (let i = x0; i < x1; i++)
       if (i >= 0 && i < TEX && j >= 0 && j < TEX) em[j * TEX + i] = 1;
   };
   draw(g, R, led, L);
@@ -33,12 +39,35 @@ function makeTexture(draw, seed = 1, ledSeed = 1) {
   return { px, em, canvas: c };
 }
 
+// Fills a rectangle (design space) with per-texel noise around a base color.
 function noiseFill(g, R, x, y, w, h, r, gg, b, amp) {
-  for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) {
+  const X = Math.round(x * TS), Y = Math.round(y * TS), W = Math.round(w * TS), H = Math.round(h * TS);
+  const id = g.getImageData(X, Y, W, H), d = id.data;
+  for (let i = 0; i < W * H; i++) {
     const n = (R() - 0.5) * amp;
-    g.fillStyle = `rgb(${(r + n) | 0},${(gg + n) | 0},${(b + n) | 0})`;
-    g.fillRect(i, j, 1, 1);
+    d[i * 4] = r + n; d[i * 4 + 1] = gg + n; d[i * 4 + 2] = b + n; d[i * 4 + 3] = 255;
   }
+  g.putImageData(id, X, Y);
+}
+
+// A patch cable with an outline, a colored body and a specular highlight.
+// pts = [start, control, end, control, end, ...] (quadratic segments).
+function cable(g, pts, col, w = 1.4) {
+  const path = (dx = 0, dy = 0) => {
+    g.beginPath(); g.moveTo(pts[0][0] + dx, pts[0][1] + dy);
+    for (let i = 1; i + 1 < pts.length; i += 2) g.quadraticCurveTo(pts[i][0] + dx, pts[i][1] + dy, pts[i + 1][0] + dx, pts[i + 1][1] + dy);
+  };
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  path(); g.strokeStyle = 'rgba(0,0,0,0.8)'; g.lineWidth = w + 1; g.stroke();
+  path(); g.strokeStyle = col; g.lineWidth = w; g.stroke();
+  path(-w * 0.2, -w * 0.2); g.strokeStyle = 'rgba(255,255,255,0.45)'; g.lineWidth = w * 0.3; g.stroke();
+}
+
+// RJ45 plug seen from the front: colored boot + translucent latch.
+function rj45(g, x, y, col) {
+  g.fillStyle = '#000'; g.fillRect(x - 1.2, y - 1.2, 2.4, 3.2);
+  g.fillStyle = col; g.fillRect(x - 1, y - 1, 2, 2.8);
+  g.fillStyle = 'rgba(255,255,255,0.55)'; g.fillRect(x - 0.8, y - 1, 1.6, 0.8);
 }
 
 /* ----------------------------------------------------------------- walls */
@@ -87,8 +116,10 @@ function drawRack(kind) {
       const u = kind === 'S' ? 8 : (R() < 0.3 ? 8 : 5);
       if (y + u > 61) break;
       g.fillStyle = kind === 'S' ? '#1d2430' : kind === 'N' ? '#1a211d' : (R() < 0.5 ? '#262a30' : '#2e3238');
-      g.fillRect(5, y, 54, u - 1);
-      g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(5, y, 54, 1);
+      const ux = kind === 'N' ? 11 : 5, uw = kind === 'N' ? 42 : 54;
+      g.fillRect(ux, y, uw, u - 1);
+      g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(ux, y, uw, 1);
+      g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(ux, y + u - 2, uw, 1);
       if (kind === 'R') {
         g.fillStyle = '#14171b';
         for (let i = 8; i < 40; i += 3) g.fillRect(i, y + 2, 2, Math.max(1, u - 4));
@@ -104,27 +135,54 @@ function drawRack(kind) {
           led(i + 1, y + u - 3, 3, 1, L() < 0.75 ? '#4fb4ff' : '#0e2440');
         }
       } else {
-        for (let i = 7; i < 55; i += 3) {
-          g.fillStyle = '#050505'; g.fillRect(i, y + 1, 2, 2);
-          if (L() < 0.6) led(i, y + 3, 1, 1, L() < 0.6 ? '#3dff6a' : '#ffb52e');
+        // switch / patch panel: a row of ports with link LEDs
+        const patch = R() < 0.35;
+        if (patch) { g.fillStyle = '#c9cdd1'; g.fillRect(11, y, 42, u - 1); }
+        for (let i = 12; i < 52; i += 2.5) {
+          g.fillStyle = '#050505'; g.fillRect(i, y + 1, 1.8, 1.8);
+          if (!patch && L() < 0.6) led(i + 0.4, y + 3, 1, 0.8, L() < 0.6 ? '#3dff6a' : '#ffb52e');
         }
+        if (patch) { g.fillStyle = '#333'; for (let i = 12; i < 52; i += 5) g.fillRect(i, y + 3.2, 1.2, 0.6); }
       }
       y += u;
     }
-    if (kind === 'N') {
-      const cols = ['#e8c21a', '#2a7de1', '#e8741a', '#d92d7a', '#8ad13a', '#e8e8e8'];
-      for (let k = 0; k < 11; k++) {
-        g.strokeStyle = cols[k % cols.length]; g.lineWidth = 1;
-        g.beginPath();
-        const x0 = 8 + R() * 46, y0 = 5 + R() * 45;
-        g.moveTo(x0, y0);
-        g.quadraticCurveTo(x0 + (R() - 0.5) * 22, 62, x0 + (R() - 0.5) * 18, 64);
-        g.stroke();
-      }
+    if (kind === 'N') drawNetworkCabling(g, R);
+    if (kind === 'R' && R() < 0.6) {
+      // redundant power cords (A/B feeds) dropping down the right post
+      cable(g, [[56, 8], [58, 10], [59.5, 16], [61, 40], [60.5, 64]], '#1a1a1a', 1.3);
+      cable(g, [[56, 20], [58, 23], [61.5, 30], [62.5, 48], [62, 64]], '#b01818', 1.3);
     }
     // label
     g.fillStyle = '#d8d8d0'; g.fillRect(24, 0, 16, 3);
   };
+}
+
+// Network rack cabling: vertical cable managers, patch cables with RJ45 plugs
+// routed into the managers, colored bundles and velcro straps.
+function drawNetworkCabling(g, R) {
+  const cols = ['#e8c21a', '#2a7de1', '#e8741a', '#d92d7a', '#8ad13a', '#e8e8e8', '#20b8c8'];
+  for (const mx of [4, 53]) {
+    g.fillStyle = '#0b0c0e'; g.fillRect(mx, 3, 7, 61);
+    // bundle inside the manager
+    for (let k = 0; k < 7; k++) {
+      const x = mx + 0.8 + k * 0.85;
+      g.fillStyle = cols[(k + mx) % cols.length]; g.fillRect(x, 3, 0.7, 61);
+    }
+    g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(mx + 5.2, 3, 1.8, 61);
+    // manager fingers
+    for (let y = 5; y < 62; y += 4) { g.fillStyle = '#23262b'; g.fillRect(mx, y, 7, 1); g.fillStyle = '#3a3f45'; g.fillRect(mx, y, 7, 0.4); }
+    // velcro straps
+    for (let y = 14; y < 62; y += 16) { g.fillStyle = '#1f3fa8'; g.fillRect(mx - 0.3, y, 7.6, 1.6); g.fillStyle = '#3b63d6'; g.fillRect(mx - 0.3, y, 7.6, 0.5); }
+  }
+  // patch cables from ports into the nearest manager
+  for (let k = 0; k < 16; k++) {
+    const px = 12.5 + Math.floor(R() * 16) * 2.5, py = 6 + Math.floor(R() * 9) * 6;
+    const left = px < 32;
+    const ex = left ? 9 : 55, drop = 3 + R() * 7;
+    const col = cols[Math.floor(R() * cols.length)];
+    cable(g, [[px, py + 1], [px, py + drop], [(px + ex) / 2, py + drop + 1.5], [ex - (left ? -0.5 : 0.5), py + drop + 3], [ex + (left ? -2 : 2), py + drop + 4]], col, 1.3);
+    rj45(g, px, py, col);
+  }
 }
 
 function drawCrac(g, R, led, L) {
@@ -201,40 +259,69 @@ function drawFloor(perf) {
   };
 }
 
-function drawCeiling(light) {
+function drawCeiling(kind) {
   return (g, R, led) => {
     noiseFill(g, R, 0, 0, 64, 64, 44, 47, 52, 6);
     g.fillStyle = '#1c1e22'; g.fillRect(0, 0, 64, 1); g.fillRect(0, 0, 1, 64);
-    if (light) {
+    g.fillStyle = '#3a3e44'; g.fillRect(1, 1, 63, 0.5); g.fillRect(1, 1, 0.5, 63);
+    if (kind === 'plain') return;
+    if (kind === 'light') {
       g.fillStyle = '#6c7078'; g.fillRect(10, 22, 44, 20);
       led(12, 24, 40, 16, '#dfe9f5');
       g.fillStyle = '#b8c6d6'; for (let x = 16; x < 50; x += 6) g.fillRect(x, 24, 1, 16);
     } else {
-      // cable tray
-      g.fillStyle = '#3a3f45'; g.fillRect(26, 0, 12, 64);
-      g.fillStyle = '#e8c21a'; g.fillRect(28, 0, 2, 64);
-      g.fillStyle = '#2a7de1'; g.fillRect(31, 0, 2, 64);
-      g.fillStyle = '#e8741a'; g.fillRect(34, 0, 2, 64);
+      // wire-mesh cable tray with rounded bundles, and a yellow fiber duct
+      g.fillStyle = '#1e2126'; g.fillRect(17, 0, 24, 64);
+      const bundles = [['#3f78c0', '#10284a'], ['#c8702a', '#4a2408'], ['#b8b8b8', '#4a4a4a'], ['#78a83a', '#28400c'], ['#3f78c0', '#10284a']];
+      bundles.forEach(([hi, lo], i) => {
+        const x = 19 + i * 4.2, gr = g.createLinearGradient(x, 0, x + 4, 0);
+        gr.addColorStop(0, lo); gr.addColorStop(0.45, hi); gr.addColorStop(1, lo);
+        g.fillStyle = gr; g.fillRect(x, 0, 4, 64);
+      });
+      g.strokeStyle = 'rgba(160,168,176,0.55)'; g.lineWidth = 0.4;
+      for (let y = 0; y < 64; y += 3) { g.beginPath(); g.moveTo(17, y); g.lineTo(41, y); g.stroke(); }
+      for (let y = 6; y < 64; y += 16) { g.fillStyle = '#111'; g.fillRect(17, y, 24, 1.2); }
+      g.fillStyle = '#8a9098'; g.fillRect(16, 0, 1.5, 64); g.fillRect(40.5, 0, 1.5, 64);
+      g.fillStyle = '#c9a20a'; g.fillRect(45, 0, 9, 64);
+      g.fillStyle = '#f2cc2a'; g.fillRect(46, 0, 7, 64);
+      g.fillStyle = '#fbe37a'; g.fillRect(47, 0, 1.5, 64);
+      for (let y = 10; y < 64; y += 21) { g.fillStyle = '#a8860a'; g.fillRect(45, y, 9, 1.5); }
     }
   };
 }
 
 /* ----------------------------------------------------------------- sprites */
 
-function makeSprite(draw, size = 64) {
-  const c = newCanvas(size, size);
+// Draws a sprite in the 64x64 design space onto a TEX x TEX canvas.
+// outline: adds a dark 2-texel outline so the sprite reads well against the walls.
+function makeSprite(draw, outline = false) {
+  const c = newCanvas(TEX, TEX);
   const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.scale(TS, TS);
   draw(g);
-  return spriteFromCanvas(c);
+  return spriteFromCanvas(c, outline);
 }
 
-function spriteFromCanvas(c) {
+const OUTLINE = 0xff0c0a0a;
+function spriteFromCanvas(c, outline = false) {
   const g = c.getContext('2d');
-  const d = g.getImageData(0, 0, c.width, c.height).data;
+  const w = c.width, h = c.height;
+  const d = g.getImageData(0, 0, w, h).data;
   const px = new Uint32Array(d.buffer.slice(0));
   // binary alpha
   for (let i = 0; i < px.length; i++) if ((px[i] >>> 24) < 110) px[i] = 0; else px[i] |= 0xff000000;
-  return { px, w: c.width, h: c.height, canvas: c };
+  if (outline) {
+    for (let pass = 0; pass < 2; pass++) {
+      const src = px.slice();
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (src[i]) continue;
+        if ((x > 0 && src[i - 1]) || (x < w - 1 && src[i + 1]) || (y > 0 && src[i - w]) || (y < h - 1 && src[i + w])) px[i] = OUTLINE;
+      }
+    }
+  }
+  return { px, w, h, canvas: c };
 }
 
 function ell(g, x, y, rx, ry, col) { g.fillStyle = col; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill(); }
@@ -387,14 +474,14 @@ function drawSpammer(g, phase, atk) {
 
 // Generic death frames: the sprite "glitches" into slices, then a pile of debris.
 function glitchFrame(src, amount) {
-  const c = newCanvas(64, 64), g = c.getContext('2d');
-  const R = rng(amount * 7 + 3);
-  for (let y = 0; y < 64; y += 4) {
-    const off = ((R() - 0.5) * amount * 2) | 0;
-    g.drawImage(src, 0, y, 64, 4, off, y + amount / 2, 64, 4);
+  const c = newCanvas(TEX, TEX), g = c.getContext('2d');
+  const R = rng(amount * 7 + 3), band = 4 * TS;
+  for (let y = 0; y < TEX; y += band) {
+    const off = ((R() - 0.5) * amount * 2 * TS) | 0;
+    g.drawImage(src, 0, y, TEX, band, off, y + amount / 2 * TS, TEX, band);
   }
   g.globalCompositeOperation = 'source-atop';
-  g.fillStyle = 'rgba(255,0,80,0.3)'; g.fillRect(0, 0, 64, 64);
+  g.fillStyle = 'rgba(255,0,80,0.3)'; g.fillRect(0, 0, TEX, TEX);
   return spriteFromCanvas(c);
 }
 
@@ -412,8 +499,8 @@ function debrisFrame(colors, seed) {
 }
 
 function buildEnemySprites(drawFn, debrisCols, seed) {
-  const walk = [0, 1].map((p) => makeSprite((g) => drawFn(g, p, false)));
-  const atk = makeSprite((g) => drawFn(g, 0, true));
+  const walk = [0, 1].map((p) => makeSprite((g) => drawFn(g, p, false), true));
+  const atk = makeSprite((g) => drawFn(g, 0, true), true);
   return {
     walk, atk,
     die: [glitchFrame(walk[0].canvas, 6), glitchFrame(walk[1].canvas, 14)],
@@ -511,6 +598,281 @@ const BRANDS = {
   } },
 };
 const SPECIAL_TILES = { '3': 'esxi', '4': 'proxmox', '5': 'vates', '6': 'hyperv', '7': 'nutanix' };
+
+/* ------------------------------------------------------------ mini-bosses */
+
+// Cable Spaghetti Monster: a knot of patch cables with googly eyes and RJ45 tentacles
+function drawSpaghetti(g, phase, atk) {
+  const R = rng(77);
+  const cols = ['#e8c21a', '#2a7de1', '#e8741a', '#d92d7a', '#8ad13a', '#e8e8e8', '#20b8c8'];
+  for (let i = 0; i < 6; i++) {
+    const x = 14 + i * 7, sw = (phase ? 3 : -3) * (i % 2 ? 1 : -1);
+    cable(g, [[x + 4, 42], [x + sw, 54], [x - 2 + sw, 63]], cols[i], 2.2);
+  }
+  ell(g, 32, 30, 20, 17, '#101216');
+  for (let k = 0; k < 34; k++) {
+    const a = R() * Math.PI * 2, r = 6 + R() * 13, a2 = a + 0.8 + R() * 1.6;
+    const p0 = [32 + Math.cos(a) * r, 30 + Math.sin(a) * r * 0.85], p2 = [32 + Math.cos(a2) * r, 30 + Math.sin(a2) * r * 0.85];
+    const pc = [32 + Math.cos((a + a2) / 2) * (r + 7), 30 + Math.sin((a + a2) / 2) * (r + 7) * 0.85];
+    cable(g, [p0, pc, p2], cols[k % cols.length], 1.8);
+  }
+  // arms ending with RJ45 plugs
+  const ay = atk ? 6 : 16;
+  cable(g, [[16, 30], [4, 26], [5, ay]], '#2a7de1', 2.2); rj45(g, 5, ay - 2, '#2a7de1');
+  cable(g, [[48, 30], [60, 26], [59, ay + 2]], '#e8741a', 2.2); rj45(g, 59, ay, '#e8741a');
+  ell(g, 25, 26, 6, 6, '#fff'); ell(g, 39, 25, 7, 7, '#fff');
+  ell(g, 26 + phase, 27, 2.5, 2.5, '#c00'); ell(g, 38 + phase, 26, 3, 3, '#c00');
+  g.fillStyle = '#300'; g.fillRect(24, 36, 16, atk ? 6 : 3);
+  g.fillStyle = '#e8e8e8'; for (let x = 25; x < 40; x += 3) g.fillRect(x, 36, 1.6, 2);
+}
+
+// Hot Spot: an overheated flame elemental escaped from the hot aisle
+function drawHotspot(g, phase, atk) {
+  const flame = (w, h, col, wob) => {
+    g.fillStyle = col; g.beginPath(); g.moveTo(32 - w, 62);
+    g.quadraticCurveTo(32 - w - 4, 62 - h * 0.5, 32 - w * 0.3 + wob, 62 - h * 0.75);
+    g.quadraticCurveTo(32 + wob, 62 - h * 0.95, 32 + wob * 1.5, 62 - h);
+    g.quadraticCurveTo(32 + w * 0.5 + wob, 62 - h * 0.7, 32 + w + 4, 62 - h * 0.4);
+    g.quadraticCurveTo(32 + w + 2, 62 - h * 0.1, 32 + w, 62); g.closePath(); g.fill();
+  };
+  const f = phase ? 3 : -3;
+  flame(24, 60, '#b8200a', f); flame(19, 50, '#ff5a1a', -f); flame(13, 38, '#ffb000', f * 0.7); flame(6, 22, '#fff2a0', -f * 0.5);
+  // angry face
+  g.fillStyle = '#2a0800'; g.beginPath(); g.moveTo(20, 30); g.lineTo(30, 34); g.lineTo(21, 37); g.fill();
+  g.beginPath(); g.moveTo(44, 30); g.lineTo(34, 34); g.lineTo(43, 37); g.fill();
+  g.fillStyle = atk ? '#fff' : '#ffe14a'; g.fillRect(23, 34, 3, 1.5); g.fillRect(38, 34, 3, 1.5);
+  g.fillStyle = '#2a0800'; g.fillRect(26, 43, 12, atk ? 6 : 3);
+  // thermometer
+  g.fillStyle = '#f2f2f2'; g.fillRect(52, 8, 5, 30); ell(g, 54.5, 40, 4, 4, '#f2f2f2');
+  g.fillStyle = '#e02020'; g.fillRect(53.5, 10, 2, 30); ell(g, 54.5, 40, 2.8, 2.8, '#e02020');
+  g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('203°F', 36, 8);
+}
+
+// Packet Storm: a DDoS thunder cloud full of packets
+function drawStorm(g, phase, atk) {
+  const pk = (x, y) => { g.fillStyle = '#f2f2f2'; g.fillRect(x, y, 7, 5); g.fillStyle = '#2a7de1'; g.fillRect(x, y, 7, 1.5); };
+  const R = rng(5 + phase);
+  for (let i = 0; i < 7; i++) pk(6 + R() * 48, 40 + R() * 20);
+  // lightning
+  g.fillStyle = atk ? '#fff6b0' : '#ffe14a';
+  g.beginPath(); g.moveTo(28, 34); g.lineTo(22, 50); g.lineTo(28, 49); g.lineTo(24, 63); g.lineTo(36, 44); g.lineTo(30, 45); g.lineTo(34, 34); g.fill();
+  // cloud
+  for (const [x, y, r, c] of [[18, 26, 11, '#3a3f4a'], [32, 20, 14, '#454b58'], [46, 26, 11, '#3a3f4a'], [26, 30, 11, '#4e5563'], [40, 31, 11, '#4e5563'], [32, 16, 9, '#5a6070']]) ell(g, x, y, r, r * 0.8, c);
+  ell(g, 26, 26, 3.5, 2.5, atk ? '#fff' : '#ff3030'); ell(g, 38, 26, 3.5, 2.5, atk ? '#fff' : '#ff3030');
+  g.fillStyle = '#ffe14a'; g.font = 'bold 6px monospace'; g.fillText('SYN SYN SYN', 8 + phase * 2, 8);
+}
+
+// Bit Rot: a moldy golem made of stacked LTO tape cartridges
+function drawBitrot(g, phase, atk) {
+  const lto = (x, y, w, h) => {
+    g.fillStyle = '#1d2a4a'; g.fillRect(x, y, w, h);
+    g.fillStyle = '#2e4270'; g.fillRect(x, y, w, 1.5);
+    g.fillStyle = '#e8e8e0'; g.fillRect(x + 2, y + 2, w - 4, 3);
+    g.fillStyle = '#111'; g.font = '3px monospace'; g.fillText('LTO-4', x + 3, y + 4.5);
+  };
+  const lo = phase ? 3 : -3;
+  lto(18, 46 + Math.min(0, lo), 10, 18); lto(36, 46 - Math.max(0, lo), 10, 18);
+  lto(14, 26, 36, 22);
+  // magnetic tape arms
+  cable(g, [[14, 30], [4, atk ? 14 : 40], [8, atk ? 6 : 52]], '#5a3a1a', 3);
+  cable(g, [[50, 30], [60, atk ? 14 : 40], [56, atk ? 6 : 52]], '#5a3a1a', 3);
+  lto(20, 8, 24, 18);
+  // reel eyes
+  for (const x of [27, 37]) { ell(g, x, 16, 4, 4, '#c9cdd1'); ell(g, x, 16, 1.5, 1.5, atk ? '#ffe14a' : '#c00'); ln(g, x - 3, 16, x + 3, 16, '#555', 0.6); }
+  // mold
+  const R = rng(9);
+  for (let i = 0; i < 16; i++) ell(g, 16 + R() * 32, 10 + R() * 50, 1.5 + R() * 3, 1 + R() * 2, i % 2 ? '#4a7a2a' : '#6a9a3a');
+  g.fillStyle = '#8ad13a'; g.font = 'bold 5px monospace'; g.fillText('0', 6, 58 - phase * 4); g.fillText('1', 56, 50 + phase * 4);
+}
+
+// Shadow IT: a hooded ninja running unauthorized SaaS on a corporate credit card
+function drawShadowIT(g, phase, atk) {
+  const lo = phase ? 3 : -3;
+  g.fillStyle = '#15101e'; g.fillRect(22, 44, 8, 20 + Math.min(0, lo)); g.fillRect(34, 44, 8, 20 - Math.max(0, lo));
+  // scarf
+  g.fillStyle = '#7855fa'; g.beginPath(); g.moveTo(40, 22); g.lineTo(62, 16 + phase * 4); g.lineTo(60, 24 + phase * 3); g.lineTo(40, 27); g.fill();
+  // hoodie
+  g.fillStyle = '#2c2240'; g.beginPath(); g.moveTo(16, 46); g.lineTo(20, 22); g.lineTo(44, 22); g.lineTo(48, 46); g.closePath(); g.fill();
+  ell(g, 32, 16, 11, 12, '#2c2240');
+  ell(g, 32, 18, 8, 7, '#0a0810');
+  g.fillStyle = '#20e8ff'; g.fillRect(27, 17, 4, 1.5); g.fillRect(34, 17, 4, 1.5);
+  // laptop with stickers
+  g.fillStyle = '#9aa1a8'; g.fillRect(12, 32, 20, 13);
+  g.fillStyle = '#7855fa'; ell(g, 18, 37, 2.5, 2.5, '#7855fa'); g.fillStyle = '#e8741a'; g.fillRect(23, 35, 5, 3);
+  g.fillStyle = '#111'; g.font = 'bold 4px monospace'; g.fillText('SaaS', 17, 43);
+  // credit card
+  g.save(); g.translate(atk ? 54 : 48, atk ? 26 : 38); g.rotate(atk ? -0.6 : 0.2);
+  g.fillStyle = '#e8c21a'; g.fillRect(-6, -4, 12, 8); g.fillStyle = '#222'; g.fillRect(-6, -2, 12, 2);
+  g.restore();
+}
+
+/* ------------------------------------------------- volumetric decor props */
+
+// Faces are small canvases drawn in a design space (w x h), at TS x resolution.
+function face(w, h, draw) {
+  const c = newCanvas(Math.round(w * TS), Math.round(h * TS));
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.scale(TS, TS);
+  draw(g, w, h);
+  return c;
+}
+
+/*
+ * Orthographic rendering of axis-aligned boxes seen from `yaw`, with a slight
+ * downward pitch, so props show their real faces as the player walks around them
+ * (Doom-style rotation frames). Boxes: {x, y, z, w, d, h, faces:{front,back,left,right,top}}
+ * in world units; the map y axis points south, hence the mirrored screen x.
+ */
+const PITCH = 0.2;
+function drawBoxes(g, boxes, yaw, ppu, cx, baseY) {
+  const cp = Math.cos(PITCH), sp = Math.sin(PITCH), cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const proj = (x, y, z) => {
+    const xr = x * cy - y * sy, yr = x * sy + y * cy;
+    return [cx - xr * ppu, baseY - z * cp * ppu - yr * sp * ppu];
+  };
+  const light = [-0.55, -0.83];
+  for (const b of boxes) {
+    const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, y0 = b.y - b.d / 2, y1 = b.y + b.d / 2, z0 = b.z, z1 = b.z + b.h;
+    // [face, origin, u end, v end, normal]; u runs to the viewer's right, v downwards
+    const quads = [
+      ['front', [x1, y0, z1], [x0, y0, z1], [x1, y0, z0], [0, -1]],
+      ['back', [x0, y1, z1], [x1, y1, z1], [x0, y1, z0], [0, 1]],
+      ['left', [x0, y0, z1], [x0, y1, z1], [x0, y0, z0], [-1, 0]],
+      ['right', [x1, y1, z1], [x1, y0, z1], [x1, y1, z0], [1, 0]],
+    ];
+    for (const [name, o, u, v, n] of quads) {
+      const ny = n[0] * sy + n[1] * cy;
+      if (ny >= -0.02) continue;
+      quad(g, b.faces[name] || b.faces.side, proj(...o), proj(...u), proj(...v), 0.2 - 0.16 * (n[0] * light[0] + n[1] * light[1]));
+    }
+    quad(g, b.faces.top, proj(x0, y1, z1), proj(x1, y1, z1), proj(x0, y0, z1), 0);
+  }
+}
+function quad(g, tex, p0, p1, p2, shadeAmt) {
+  if (!tex) return;
+  const tw = tex.width, th = tex.height;
+  g.save();
+  g.setTransform((p1[0] - p0[0]) / tw, (p1[1] - p0[1]) / tw, (p2[0] - p0[0]) / th, (p2[1] - p0[1]) / th, p0[0], p0[1]);
+  g.drawImage(tex, 0, 0);
+  if (shadeAmt > 0) { g.fillStyle = `rgba(0,0,0,${Math.min(0.7, shadeAmt)})`; g.fillRect(0, 0, tw, th); }
+  g.restore();
+}
+
+const DECOR_FRAMES = 16;
+// Renders a prop in DECOR_FRAMES orientations. `size` = world units covered by the sprite.
+function propFrames(boxes, size, extra) {
+  const ppu = TEX / size;
+  const radius = Math.max(...boxes.map((b) => Math.hypot(b.w, b.d) / 2 + Math.hypot(b.x, b.y)));
+  const margin = radius * Math.sin(PITCH) * ppu + 2;
+  const frames = [];
+  for (let k = 0; k < DECOR_FRAMES; k++) {
+    const yaw = k / DECOR_FRAMES * Math.PI * 2;
+    const c = newCanvas(TEX, TEX), g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    drawBoxes(g, boxes, yaw, ppu, TEX / 2, TEX - margin);
+    if (extra) extra(g, yaw, ppu, TEX / 2, TEX - margin);
+    frames.push(spriteFromCanvas(c, true));
+  }
+  return { frames, scale: size, z: -margin / ppu };
+}
+
+function buildDecor() {
+  const cardboard = (label) => face(32, 26, (g, w, h) => {
+    g.fillStyle = '#b58a55'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#a37848'; g.fillRect(0, 0, w, 1); g.fillRect(0, h - 1, w, 1); g.fillRect(0, 0, 1, h); g.fillRect(w - 1, 0, 1, h);
+    g.fillStyle = '#d8b882'; g.fillRect(w / 2 - 2, 0, 4, 4);
+    if (label === 'front') {
+      g.fillStyle = '#c21d1d'; g.font = 'bold 5px monospace'; g.fillText('FRAGILE', 5, 13);
+      g.strokeStyle = '#c21d1d'; g.lineWidth = 0.6; g.strokeRect(4, 8, 24, 7);
+      g.fillStyle = '#222'; g.font = '3px monospace'; g.fillText('1U SERVER x4', 6, 21);
+    } else if (label === 'side') {
+      g.strokeStyle = '#222'; g.lineWidth = 1;
+      for (const x of [10, 20]) { g.beginPath(); g.moveTo(x, 20); g.lineTo(x, 9); g.moveTo(x - 3, 12); g.lineTo(x, 8); g.lineTo(x + 3, 12); g.stroke(); }
+    } else {
+      g.fillStyle = '#f2f2f2'; g.fillRect(6, 7, 18, 11);
+      g.fillStyle = '#222'; for (let x = 8; x < 22; x += 1.5) g.fillRect(x, 13, x % 3 ? 0.6 : 1, 4);
+      g.font = '3px monospace'; g.fillText('SHIP TO: DC', 7, 11);
+    }
+  });
+  const cardTop = face(32, 32, (g, w, h) => {
+    g.fillStyle = '#c49a62'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#9a7445'; g.fillRect(0, h / 2 - 0.5, w, 1);
+    g.fillStyle = 'rgba(230,220,190,0.8)'; g.fillRect(w / 2 - 3, 0, 6, h);
+  });
+  const pallet = face(36, 5, (g, w, h) => {
+    g.fillStyle = '#7a5a34'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#2a1a0a'; g.fillRect(4, 2, 10, 3); g.fillRect(22, 2, 10, 3);
+    g.fillStyle = '#9a764a'; g.fillRect(0, 0, w, 1);
+  });
+  const palletTop = face(36, 36, (g, w, h) => {
+    g.fillStyle = '#2a1a0a'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#9a764a'; for (let x = 0; x < w; x += 7) g.fillRect(x, 0, 5, h);
+  });
+  const crate = propFrames([
+    { x: 0, y: 0, z: 0, w: 0.9, d: 0.9, h: 0.12, faces: { side: pallet, top: palletTop } },
+    { x: 0, y: 0, z: 0.12, w: 0.78, d: 0.78, h: 0.6, faces: { front: cardboard('front'), back: cardboard('label'), left: cardboard('side'), right: cardboard('side'), top: cardTop } },
+  ], 1.35);
+
+  const upsFront = face(28, 30, (g, w, h) => {
+    g.fillStyle = '#1a1c20'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#2c3038'; g.fillRect(0, 0, w, 1.5);
+    g.fillStyle = '#f2c230'; g.fillRect(0, 9, w, 8);
+    g.fillStyle = '#111'; g.font = 'bold 4.5px monospace'; g.fillText('UPS 48V', 3, 15);
+    for (let x = 4; x < 20; x += 4) { g.fillStyle = '#3dff6a'; g.fillRect(x, 22, 2.4, 1.4); }
+    g.fillStyle = '#c21d1d'; g.fillRect(21, 21, 4, 3);
+    g.fillStyle = '#f2c230'; g.beginPath(); g.moveTo(14, 25); g.lineTo(17, 29); g.lineTo(11, 29); g.fill();
+  });
+  const upsSide = face(22, 30, (g, w, h) => {
+    g.fillStyle = '#16181b'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#2c3038'; for (let y = 5; y < 26; y += 3) g.fillRect(3, y, w - 6, 1.2);
+    g.fillStyle = '#f2c230'; g.fillRect(0, 9, w, 2);
+  });
+  const upsTop = face(28, 22, (g, w, h) => { g.fillStyle = '#23262b'; g.fillRect(0, 0, w, h); g.fillStyle = '#34383f'; g.fillRect(2, 2, w - 4, h - 4); });
+  const red = face(4, 4, (g) => { g.fillStyle = '#c21d1d'; g.fillRect(0, 0, 4, 4); });
+  const blk = face(4, 4, (g) => { g.fillStyle = '#111'; g.fillRect(0, 0, 4, 4); });
+  const ups = propFrames([
+    { x: 0, y: 0, z: 0, w: 0.56, d: 0.44, h: 0.6, faces: { front: upsFront, back: upsFront, left: upsSide, right: upsSide, top: upsTop } },
+    { x: -0.14, y: 0, z: 0.6, w: 0.08, d: 0.08, h: 0.05, faces: { side: red, top: red } },
+    { x: 0.14, y: 0, z: 0.6, w: 0.08, d: 0.08, h: 0.05, faces: { side: blk, top: blk } },
+  ], 1.1);
+
+  const coolerFront = face(20, 40, (g, w, h) => {
+    g.fillStyle = '#e8ebee'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#c9cdd1'; g.fillRect(0, 0, w, 1.5);
+    g.fillStyle = '#2a2e34'; g.fillRect(3, 6, 14, 10);
+    g.fillStyle = '#c21d1d'; g.fillRect(5, 8, 3, 4); g.fillStyle = '#1f58d6'; g.fillRect(12, 8, 3, 4);
+    g.fillStyle = '#9aa1a8'; g.fillRect(3, 18, 14, 2);
+    g.fillStyle = '#1f58d6'; g.fillRect(3, 30, 14, 3);
+  });
+  const coolerSide = face(20, 40, (g, w, h) => { g.fillStyle = '#dde1e5'; g.fillRect(0, 0, w, h); g.fillStyle = '#b8bec4'; for (let y = 26; y < 38; y += 3) g.fillRect(3, y, w - 6, 1); });
+  const coolerTop = face(20, 20, (g, w, h) => { g.fillStyle = '#c9cdd1'; g.fillRect(0, 0, w, h); ell(g, w / 2, h / 2, 6, 6, '#8a9098'); });
+  const cooler = propFrames([
+    { x: 0, y: 0, z: 0, w: 0.32, d: 0.32, h: 0.62, faces: { front: coolerFront, back: coolerSide, left: coolerSide, right: coolerSide, top: coolerTop } },
+  ], 1.2, (g, yaw, ppu, cx, baseY) => {
+    // water jug: a cylinder, the same from every angle
+    const top = baseY - 0.62 * Math.cos(PITCH) * ppu, r = 0.15 * ppu, hgt = 0.34 * ppu;
+    g.fillStyle = 'rgba(70,150,255,0.95)';
+    g.fillRect(cx - r, top - hgt, r * 2, hgt);
+    ell(g, cx, top - hgt, r, r * 0.35, 'rgba(120,190,255,1)');
+    ell(g, cx, top, r, r * 0.35, 'rgba(50,120,230,1)');
+    g.fillStyle = 'rgba(210,235,255,0.9)'; g.fillRect(cx - r * 0.6, top - hgt * 0.9, r * 0.25, hgt * 0.75);
+    g.fillStyle = 'rgba(40,100,210,1)'; g.fillRect(cx - r, top - hgt * 0.45, r * 2, r * 0.25);
+  });
+
+  // fire extinguisher: a cylinder, drawn once with shading
+  const ext = makeSprite((g) => {
+    const gr = g.createLinearGradient(27, 0, 38, 0);
+    gr.addColorStop(0, '#6a0808'); gr.addColorStop(0.35, '#e83a3a'); gr.addColorStop(1, '#700a0a');
+    g.fillStyle = gr; g.fillRect(27, 38, 11, 25);
+    ell(g, 32.5, 38, 5.5, 2.5, '#a81818');
+    g.fillStyle = '#222'; g.fillRect(30, 32, 5, 6); g.fillRect(35, 33, 7, 2);
+    cable(g, [[36, 35], [42, 40], [40, 50]], '#1a1a1a', 1.4);
+    g.fillStyle = '#eee'; g.fillRect(28.5, 46, 8, 6); g.fillStyle = '#c21d1d'; g.font = '3px monospace'; g.fillText('CO2', 29.5, 50.5);
+  }, true);
+
+  return { x: crate, B: ups, f: cooler, e: { frames: [ext], scale: 0.6, z: 0 } };
+}
 
 /* items */
 function drawItem(type) {
@@ -693,7 +1055,7 @@ function buildAssets() {
   // concrete (and secret fake walls) in each episode's colors
   Assets.concrete = [0, 1, 2, 3, 4].map((ep) => variants(concrete(ep), 2, 1));
   Assets.floor = [makeTexture(drawFloor(false), 5), makeTexture(drawFloor(true), 6)];
-  Assets.ceil = [makeTexture(drawCeiling(false), 7), makeTexture(drawCeiling(true), 8)];
+  Assets.ceil = [makeTexture(drawCeiling('plain'), 7), makeTexture(drawCeiling('light'), 8), makeTexture(drawCeiling('tray'), 9)];
 
   Assets.enemies = {
     bug: buildEnemySprites(drawBug, ['#2c9a37', '#1b4d21', '#3fc24c', '#ff00ff'], 3),
@@ -704,8 +1066,14 @@ function buildAssets() {
   };
   let bs = 10;
   for (const [k, pal] of Object.entries(BOSS_PAL)) Assets.enemies[k] = buildEnemySprites(drawBoss(pal), [pal.body, pal.head, '#e8c21a', pal.dark], bs++);
+  Assets.enemies.spaghetti = buildEnemySprites(drawSpaghetti, ['#e8c21a', '#2a7de1', '#e8741a', '#d92d7a'], 20);
+  Assets.enemies.hotspot = buildEnemySprites(drawHotspot, ['#3a1a0a', '#6a2a0a', '#222', '#555'], 21);
+  Assets.enemies.storm = buildEnemySprites(drawStorm, ['#3a3f4a', '#5a6070', '#f2f2f2', '#ffe14a'], 22);
+  Assets.enemies.bitrot = buildEnemySprites(drawBitrot, ['#1d2a4a', '#4a7a2a', '#6b4a2a', '#2a2a2a'], 23);
+  Assets.enemies.shadowit = buildEnemySprites(drawShadowIT, ['#1a1426', '#2c2240', '#e8c21a', '#555'], 24);
   Assets.items = {};
-  for (const k of '+HAascruFMLxejkgKGYBf') Assets.items[k] = makeSprite(drawItem(k));
+  for (const k of '+HAascruFMLejkgKGY') Assets.items[k] = makeSprite(drawItem(k), true);
+  Assets.decor = buildDecor();
   Assets.proj = {
     orb: orbSprite('#ff3bd0', '#7a1f5c', 7),
     bolt: orbSprite('#ffe14a', '#ff5a1a', 5),
@@ -715,6 +1083,11 @@ function buildAssets() {
     miner: orbSprite('#ffe14a', '#a86a00', 10),
     botnet: orbSprite('#b6ffbf', '#1f6a24', 10),
     zeroday: orbSprite('#e0ffff', '#008aa8', 10),
+    fire: [0, 1].map((i) => makeSprite((g) => { ell(g, 32, 32, 10 + i, 10 + i, '#c8300a'); ell(g, 32, 33, 7, 7, '#ff8a1a'); ell(g, 32, 34, 4, 4, '#ffe890'); })),
+    rot: orbSprite('#c8ff7a', '#3a6a1a', 8),
+    packet: makeSprite((g) => { g.fillStyle = '#f2f2f2'; g.fillRect(22, 26, 20, 13); g.fillStyle = '#2a7de1'; g.fillRect(22, 26, 20, 4); g.fillStyle = '#ffe14a'; g.fillRect(24, 32, 16, 1.5); g.fillRect(24, 35, 10, 1.5); }, true),
+    plug: [0, 1].map((i) => makeSprite((g) => { g.save(); g.translate(32, 32); g.rotate(i * Math.PI / 2); g.fillStyle = '#e8c21a'; g.fillRect(-4, -8, 8, 10); g.fillStyle = 'rgba(220,240,255,0.9)'; g.fillRect(-5, 2, 10, 7); g.fillStyle = '#c9a227'; for (let k = -4; k < 5; k += 2) g.fillRect(k, 7, 1, 2); g.restore(); }, true)),
+    card: [0, 1, 2, 3].map((i) => makeSprite((g) => { g.save(); g.translate(32, 32); g.rotate(i * Math.PI / 4); g.fillStyle = '#e8c21a'; g.fillRect(-10, -6, 20, 12); g.fillStyle = '#222'; g.fillRect(-10, -3, 20, 3); g.fillStyle = '#c9a227'; g.fillRect(-7, 1, 5, 3); g.restore(); }, true)),
     nut: [0, 1, 2, 3].map((i) => makeSprite((g) => drawCageNut(g, 32, 32, 1.3, i * Math.PI / 8))),
     hdd: [0, 1, 2, 3].map((i) => makeSprite((g) => drawHdd(g, 32, 32, 1.6, i * Math.PI / 2))),
     sfp: [0, 1].map((i) => makeSprite((g) => {

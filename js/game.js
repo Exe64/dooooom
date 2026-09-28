@@ -39,6 +39,15 @@ const ETYPES = {
   zeroday: { ...BOSS_BASE, name: 'ZERO-DAY', tag: 'EXPLOIT IN PROGRESS', hp: 1500, speed: 1.2, dmg: [9, 15], shot: 'zeroday', minion: 'bot' },
   ransomware: { ...BOSS_BASE, name: 'RANSOMWARE', tag: 'ENCRYPTION IN PROGRESS', hp: 2200, dmg: [10, 16], shot: 'boss', minion: 'bug' },
 };
+// Mini-bosses guard the exit of every x5 level (E1M5, E2M5...).
+const MINI_BASE = { speed: 1.3, radius: 0.5, scale: 1.35, z: 0, atkRange: 14, cd: 1.6, sight: 22, pain: 0.1, shotZ: 0.7, boss: true, mini: true };
+Object.assign(ETYPES, {
+  spaghetti: { ...MINI_BASE, name: 'CABLE SPAGHETTI MONSTER', tag: 'UNDOCUMENTED PATCHING', hp: 450, dmg: [6, 10], shot: 'plug', fan: 3, shotSpeed: 9, shotScale: 0.3 },
+  hotspot: { ...MINI_BASE, name: 'HOT SPOT', tag: 'THERMAL RUNAWAY', hp: 600, dmg: [8, 12], shot: 'fire', fan: 5, shotSpeed: 6, shotScale: 0.45 },
+  storm: { ...MINI_BASE, name: 'PACKET STORM', tag: 'DDOS IN PROGRESS', hp: 700, z: 0.25, dmg: [4, 7], shot: 'packet', fan: 1, burst: 6, shotSpeed: 13, shotScale: 0.28, cd: 2.0 },
+  bitrot: { ...MINI_BASE, name: 'BIT ROT', tag: 'SILENT DATA CORRUPTION', hp: 950, speed: 0.8, dmg: [10, 16], shot: 'rot', fan: 3, shotSpeed: 6.5, shotScale: 0.4, minion: 'bug' },
+  shadowit: { ...MINI_BASE, name: 'SHADOW IT', tag: 'UNSANCTIONED SAAS', hp: 850, speed: 2.2, dmg: [7, 11], shot: 'card', fan: 3, shotSpeed: 12, shotScale: 0.3, teleport: true },
+});
 const ENEMY_CHARS = { b: 'bug', d: 'drone', o: 'bot', t: 'troll', m: 'spam' };
 const ITEM_CHARS = '+HAascrukgjFMKGYL';
 const DECOR_CHARS = 'xef';
@@ -164,7 +173,8 @@ function loadLevel(idx) {
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const c = rows[y][x], i = y * w + x;
     L.variant[i] = ((x * 7919 + y * 104729) >>> 3) % 251;
-    L.ceil[i] = (x % 3 === 1 && y % 3 === 1) ? 1 : 0;
+    // ceiling: light panels on a 3x3 grid, cable trays running north-south every 4 columns
+    L.ceil[i] = (x % 3 === 1 && y % 3 === 1) ? 1 : x % 4 === 2 ? 2 : 0;
     if (WALL_CHARS.includes(c)) {
       L.map[i] = c.charCodeAt(0);
       if ('3456'.includes(c)) L.totalSpecials++;
@@ -177,10 +187,11 @@ function loadLevel(idx) {
     }
     if (c === 'P') start = { x: x + 0.5, y: y + 0.5 };
     else if (c === 'Z') spawnEnemy(def.bossType || 'ransomware', x + 0.5, y + 0.5);
+    else if (c === 'V') spawnEnemy(def.miniType || 'spaghetti', x + 0.5, y + 0.5);
     else if (ENEMY_CHARS[c]) spawnEnemy(ENEMY_CHARS[c], x + 0.5, y + 0.5);
     else if (ITEM_CHARS.includes(c)) { L.items.push({ x: x + 0.5, y: y + 0.5, type: c, taken: false }); L.totalItems++; }
-    else if (c === 'B') { L.barrels.push({ x: x + 0.5, y: y + 0.5, hp: 25, fuse: -1, dead: false }); L.block[i] = 1; }
-    else if (DECOR_CHARS.includes(c)) { L.decor.push({ x: x + 0.5, y: y + 0.5, type: c, uses: 0 }); if (c === 'x') L.block[i] = 1; }
+    else if (c === 'B') { L.barrels.push({ x: x + 0.5, y: y + 0.5, hp: 25, fuse: -1, dead: false, face: ((x * 7 + y * 13) % 4) * Math.PI / 2 }); L.block[i] = 1; }
+    else if (DECOR_CHARS.includes(c)) { L.decor.push({ x: x + 0.5, y: y + 0.5, type: c, uses: 0, face: ((x * 7 + y * 13) % 4) * Math.PI / 2 }); if (c === 'x') L.block[i] = 1; }
   }
   // perforated tiles in front of racks (cold aisles)
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
@@ -205,7 +216,7 @@ function loadLevel(idx) {
 function spawnEnemy(type, x, y) {
   const T = ETYPES[type];
   const e = { type, x, y, hp: T.hp, state: 'idle', timer: 0, cd: 0, animT: Math.random(), painT: 0, flash: 0, sees: false, losT: Math.random() * 0.2,
-    alerted: false, strafe: Math.random() < 0.5 ? 1 : -1, shots: 0, shotT: 0, attacks: 0, shrunk: 0 };
+    alerted: false, strafe: Math.random() < 0.5 ? 1 : -1, shots: 0, shotT: 0, attacks: 0, shrunk: 0, tpT: 4 };
   L.enemies.push(e);
   L.totalKills++;
   if (T.boss) L.bossAlive = true;
@@ -673,7 +684,12 @@ function killEnemy(e, how) {
   Sfx.enemyDeath(sndKind(e), dist);
   if (how !== 'stomp') addFx(e.x, e.y, 'boom', 0.2 + T.z, T.boss ? 1.5 : 0.5);
   if ((e.type === 'bot' || e.type === 'spam') && Math.random() < 0.7) L.items.push({ x: e.x, y: e.y, type: 'a', taken: false, drop: true });
-  if (T.boss) {
+  if (T.mini) {
+    L.bossAlive = L.enemies.some((o) => o !== e && alive(o) && ETYPES[o.type].boss);
+    P.shake = 0.7;
+    msg(`MINI-BOSS ${T.name} DOWN!${L.bossAlive ? '' : ' The REBOOT terminal is unlocked.'}`);
+    quip('bossKill', 1, true);
+  } else if (T.boss) {
     L.bossAlive = false;
     P.shake = 1;
     msg(`${T.name} ELIMINATED! The REBOOT terminal is unlocked.`);
@@ -754,10 +770,10 @@ function enemyFire(e) {
   };
   Sfx.enemyShoot(sndKind(e), dist);
   if (T.boss) {
-    const n = e.type === 'zeroday' ? 7 : 5;
-    for (let k = 0; k < n; k++) shoot(ang + (k - (n - 1) / 2) * 0.13, T.shot, 7.5, 0.5);
+    const n = T.fan || (e.type === 'zeroday' ? 7 : 5);
+    for (let k = 0; k < n; k++) shoot(ang + (k - (n - 1) / 2) * 0.13, T.shot, T.shotSpeed || 7.5, T.shotScale || 0.5);
     e.attacks++;
-    if (e.attacks % 4 === 0) spawnMinions(e);
+    if (T.minion && e.attacks % 4 === 0) spawnMinions(e);
   } else if (T.fan) {
     for (let k = 0; k < T.fan; k++) shoot(ang + (k - (T.fan - 1) / 2) * 0.18, T.shot, 9, 0.22);
   } else if (e.type === 'drone') shoot(ang + rand(-0.05, 0.05), 'orb', 7, 0.35);
@@ -813,6 +829,22 @@ function updateEnemy(e, dt) {
     return;
   }
   if (P.dead) return;
+
+  if (T.teleport && e.sees && (e.tpT -= dt) <= 0) {
+    // Shadow IT vanishes and reappears somewhere around the player
+    for (let tries = 0; tries < 16; tries++) {
+      const a = Math.random() * Math.PI * 2, r = rand(3, 6);
+      const x = P.x + Math.cos(a) * r, y = P.y + Math.sin(a) * r;
+      if (!blocked(x, y, T.radius) && hasLOS(x, y, P.x, P.y)) {
+        addFx(e.x, e.y, 'plasmaHit', 0.5, 0.4, 1.2);
+        e.x = x; e.y = y;
+        addFx(x, y, 'plasmaHit', 0.5, 0.4, 1.2);
+        Sfx.shrink();
+        break;
+      }
+    }
+    e.tpT = rand(4, 6.5);
+  }
 
   if (!shrunk && e.cd <= 0 && e.sees) {
     if (T.melee) {
@@ -1003,7 +1035,7 @@ function render() {
     for (let x = 0; x < W; x++, fx += stx, fy += sty) {
       if (fx < 0 || fy < 0 || fx >= w || fy >= h) { buf[fo + x] = 0xff000000; buf[co + x] = 0xff000000; continue; }
       const cx = fx | 0, cy = fy | 0, ci = cy * w + cx;
-      const ti = ((((fy - cy) * 64) | 0) << 6) | (((fx - cx) * 64) | 0);
+      const ti = ((((fy - cy) * TEX) | 0) << 7) | (((fx - cx) * TEX) | 0);
       buf[fo + x] = shade(floorT[L.floor[ci]].px[ti], s);
       const ct = ceilT[L.ceil[ci]];
       buf[co + x] = ct.em[ti] ? ct.px[ti] : shade(ct.px[ti], s);
@@ -1026,15 +1058,15 @@ function render() {
     const vars = ch === '#' || ch === '?' ? concreteT : Assets.walls[ch];
     const frames = vars[L.variant[vi] % vars.length];
     const tex = frames[(animFrame + L.variant[vi]) % frames.length];
-    let tx = (RH.wx * 64) | 0;
-    if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = 63 - tx;
+    let tx = (RH.wx * TEX) | 0;
+    if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = TEX - 1 - tx;
     let s = lightAt(d);
     if (RH.side === 1) s = (s * 0.78) | 0;
-    const step = 64 / lh;
+    const step = TEX / lh;
     let tp = (y0 - top) * step;
     const px = tex.px, em = tex.em;
     for (let y = y0; y <= y1; y++, tp += step) {
-      const ti = ((tp | 0) & 63) << 6 | tx;
+      const ti = ((tp | 0) & (TEX - 1)) << 7 | tx;
       buf[y * W + x] = em[ti] ? px[ti] : shade(px[ti], s);
     }
   }
@@ -1050,8 +1082,9 @@ function render() {
     list.push({ spr, scale, z, flash, bright, tx, ty });
   };
   const frameOf = (a, t, fps) => (Array.isArray(a) ? a[((t * fps) | 0) % a.length] : a);
-  for (const d of L.decor) add(d.x, d.y, Assets.items[d.type], d.type === 'x' ? 0.9 : d.type === 'f' ? 0.75 : 0.6, 0);
-  for (const b of L.barrels) if (!b.dead) add(b.x, b.y, Assets.items.B, 0.75, 0, b.fuse >= 0);
+  for (const d of L.decor) { const A = Assets.decor[d.type]; add(d.x, d.y, propFrame(A, d), A.scale, A.z); }
+  const UPS = Assets.decor.B;
+  for (const b of L.barrels) if (!b.dead) add(b.x, b.y, propFrame(UPS, b), UPS.scale, UPS.z, b.fuse >= 0);
   const bobT = performance.now() / 400;
   for (const it of L.items) {
     if (it.taken) continue;
@@ -1096,6 +1129,16 @@ function render() {
   sctx.fillStyle = 'rgba(120,255,140,0.8)';
   sctx.fillRect(W / 2 - 4, HORIZ, 3, 1); sctx.fillRect(W / 2 + 2, HORIZ, 3, 1);
   sctx.fillRect(W / 2, HORIZ - 4, 1, 3); sctx.fillRect(W / 2, HORIZ + 2, 1, 3);
+}
+
+// Picks the rotation frame of a volumetric prop according to where the player stands.
+function propFrame(A, o) {
+  const n = A.frames.length;
+  if (n === 1) return A.frames[0];
+  const phi = Math.atan2(P.y - o.y, P.x - o.x);
+  const yaw = Math.atan2(-Math.cos(phi), -Math.sin(phi)) + (o.face || 0);
+  const k = ((Math.round(yaw / (Math.PI * 2) * n) % n) + n) % n;
+  return A.frames[k];
 }
 
 function drawSprite(s) {
@@ -1378,10 +1421,10 @@ function drawOverlayText(g) {
     const T = ETYPES[boss.type];
     const f = Math.max(0, boss.hp / T.hp);
     g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(W / 2 - 101, 21, 202, 10);
-    g.fillStyle = '#7a0f0f'; g.fillRect(W / 2 - 100, 22, 200, 8);
-    g.fillStyle = '#ff2a2a'; g.fillRect(W / 2 - 100, 22, 200 * f, 8);
+    g.fillStyle = T.mini ? '#6a3a08' : '#7a0f0f'; g.fillRect(W / 2 - 100, 22, 200, 8);
+    g.fillStyle = T.mini ? '#ff9a1a' : '#ff2a2a'; g.fillRect(W / 2 - 100, 22, 200 * f, 8);
     g.font = `5px ${FONT}`; g.textAlign = 'center'; g.fillStyle = '#fff';
-    g.fillText(`${T.name}: ${T.tag}`, W / 2, 18);
+    g.fillText(`${T.mini ? 'MINI-BOSS ' : ''}${T.name}: ${T.tag}`, W / 2, 18);
   }
 }
 
@@ -1562,7 +1605,7 @@ function showSelect() {
     for (let k = 0; k < 10; k++) {
       const i = e * 10 + k;
       const locked = i > max;
-      html += `<button ${locked ? 'disabled' : `data-act="play" data-arg="${i}"`} title="${locked ? 'Locked' : LEVEL_NAMES[i]}" class="lvl${k === 9 ? ' boss' : ''}">${e + 1}-${k + 1}</button>`;
+      html += `<button ${locked ? 'disabled' : `data-act="play" data-arg="${i}"`} title="${locked ? 'Locked' : LEVEL_NAMES[i]}" class="lvl${k === 9 ? ' boss' : k === 4 ? ' mini' : ''}">${e + 1}-${k + 1}</button>`;
     }
     html += '</div>';
   });

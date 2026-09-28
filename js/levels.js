@@ -9,7 +9,7 @@
  * Doors       D door   1 red badge door   2 blue badge door   ? secret passage
  * Player      P
  * Enemies     b bug   d viral drone   o BSOD bot   t forum troll   m spammer
- *             Z episode boss
+ *             Z episode boss   V mini-boss (x5 levels)
  * Items       + coffee   H medkit   A firewall (armor)   j energy drink
  *             a cage nuts   s jumbo frames   k SFP modules (rockets)
  *             g hard drives (grenades)   c energy cells   r red badge   u blue badge
@@ -47,6 +47,9 @@ const LEVEL_NAMES = [
   'HYPERSCALE HALL A', 'AVAILABILITY ZONE 2', 'EU-WEST REGION', 'GPU FARM', 'KUBERNETES CLUSTER',
   'CONTROL PLANE', 'SERVERLESS', 'EDGE COMPUTING', 'HSM ROOM', 'THE KERNEL',
 ];
+
+const MINIBOSSES = ['spaghetti', 'hotspot', 'storm', 'bitrot', 'shadowit'];
+const MINIBOSS_NAMES = { spaghetti: 'the CABLE SPAGHETTI MONSTER', hotspot: 'the HOT SPOT', storm: 'the PACKET STORM', bitrot: 'BIT ROT', shadowit: 'SHADOW IT' };
 
 const BOSS_NAMES = { botnet: 'the BOTNET', miner: 'the CRYPTOMINER', rootkit: 'the ROOTKIT', zeroday: 'the ZERO-DAY', ransomware: 'the RANSOMWARE' };
 
@@ -159,6 +162,7 @@ function levelSpec(i) {
     w: Math.min(56, 30 + ep * 5 + k),
     h: Math.min(42, 22 + ep * 4 + Math.floor(k / 2)),
     boss: k === 9 ? EPISODES[ep].boss : null,
+    miniboss: k === 4 ? MINIBOSSES[ep] : null,
     keys: i < 4 ? 1 : (R() < 0.35 ? 1 : 2),
     secret: true,
     barrels: Math.min(0.6, 0.25 + ep * 0.08),
@@ -189,7 +193,8 @@ function getLevel(i) {
   } else {
     const spec = levelSpec(i);
     const gen = LevelGen.generate(spec);
-    const obj = spec.boss ? `${BOSS_NAMES[spec.boss].replace(/^./, (c) => c.toUpperCase())} guards the REBOOT terminal. Destroy it.`
+    const obj = spec.miniboss ? `Mini-boss alert: ${MINIBOSS_NAMES[spec.miniboss]} is guarding the REBOOT terminal.`
+      : spec.boss ? `${BOSS_NAMES[spec.boss].replace(/^./, (c) => c.toUpperCase())} guards the REBOOT terminal. Destroy it.`
       : spec.keys >= 2 ? 'Blue badge, red badge, then the REBOOT terminal.' : 'Find the red badge and reach the REBOOT terminal.';
     def = { map: gen.map, intro: `${EPISODES[ep].intro} ${obj}` };
   }
@@ -199,6 +204,7 @@ function getLevel(i) {
   def.name = `${code} : ${LEVEL_NAMES[i]}`;
   def.ambient = EPISODES[ep].ambient;
   def.bossType = k === 9 ? EPISODES[ep].boss : null;
+  def.miniType = k === 4 ? MINIBOSSES[ep] : null;
   levelCache[i] = def;
   return def;
 }
