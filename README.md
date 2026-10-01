@@ -11,19 +11,27 @@ The on-call admin, with his shades and his oversized ego, sets out to reboot eve
 No external assets: textures, logos, sprites, weapons and sounds are all generated in code
 (2D canvas + Web Audio API, with the admin's voice provided by the browser's speech synthesis). No build step, no dependencies.
 
-The look is deliberately pixelated:
-- **Textures** are 128x128, so logos, cabling and labels stay readable.
+Two visual styles, switched with **T**, from the title screen or from the pause menu (the choice is remembered):
+- **MODERN** (default): the 3D view is rendered at 720x346 and smoothly upscaled, with 256x256 textures and sprites,
+  soft sprite edges and finely rendered weapons.
+- **RETRO**: the Doom look, rendered at 480x230 with crisp pixels, 128x128 textures and sprites, and pixel-art weapons.
+
+MODERN costs about 2.5 times more CPU than RETRO. On a machine that can't keep up, it first falls back
+to the lower resolution (still smoothed), then to the LOW graphics quality.
+
+Details:
+- **Textures** keep logos, cabling and labels readable.
 - **Props** such as pallets of servers, UPS batteries and water coolers are small 3D boxes, pre-rendered from 16 angles like Doom's rotating sprites. They show their real faces as you walk around them.
 - **Enemies and items** get a dark outline so they stand out from the racks.
-- **Weapons in hand** are small 3D models (boxes and tubes) rendered in perspective with per-face lighting,
-  then pixelated and outlined. They are drawn at twice the resolution of the 3D view, dim in dark areas and light up when firing.
+- **Weapons in hand** are small 3D models (boxes and tubes) rendered in perspective with per-face lighting:
+  pixelated and outlined in RETRO, anti-aliased at 4x resolution in MODERN. They dim in dark areas and light up when firing.
 - **Lighting** is colored and baked per level into a lightmap: pools of light under the ceiling panels (with shadows),
   green glow from the exit signs, red and blue from badge doors, LED spill from the racks, and ambient occlusion along the walls.
   Each episode has its own mood and distance fog (icy blue in the cooling zone, sodium lamps in the archives...).
 - **Dynamic lights**: muzzle flashes, projectiles, explosions and armed UPS batteries light up walls, floors and enemies.
 - **Bloom** around LEDs, screens, neon panels and plasma, plus a soft vignette.
 
-All of this runs in the software renderer at 480x230 and costs a few milliseconds per frame. Press **G** to switch to
+All of this runs in the software renderer. Press **G** to switch to
 the LOW graphics mode (baked lighting only, no dynamic lights, bloom or vignette); the game also drops to LOW by itself
 on a machine that can't keep up.
 
@@ -49,9 +57,10 @@ Progress is saved in the browser (CONTINUE button, and a level select for unlock
 | 1-8 / wheel | Switch weapon |
 | Shift | Run |
 | Tab / M | Datacenter map |
-| Esc / P | Pause (mouse sensitivity, graphics) |
+| Esc / P | Pause (mouse sensitivity, graphics, style) |
 | N / V | Mute sound / the admin's voice |
 | G | Graphics quality (high / low) |
+| T | Style: modern / retro (pixelated) |
 
 Cheat codes: `iddqd` (root mode) and `idkfa`.
 

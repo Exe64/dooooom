@@ -7,8 +7,11 @@
  * Each texture is converted to a Uint32Array (little-endian ABGR) together with
  * an "emissive" mask (pixels not darkened by distance: LEDs, screens).
  */
-const TEX = 128;          // texture / sprite resolution in texels
+const TEX = 128;          // sprite resolution in texels (and wall textures in RETRO style)
 const TS = TEX / 64;      // design space to texel scale
+const WTEX_HI = 256;      // wall / floor / ceiling resolution in MODERN style
+const SPR_HI = 256;       // sprite resolution in MODERN style (RETRO uses a TEX x TEX copy)
+const STS = SPR_HI / 64;  // design space to texel scale for MODERN sprites
 
 function rng(seed) {
   let s = (seed * 2654435761) >>> 0 || 1;
@@ -21,27 +24,37 @@ function newCanvas(w, h) {
   return c;
 }
 
+// Wall / floor / ceiling texture: drawn at WTEX_HI for the MODERN style, plus a
+// filtered TEX x TEX copy (`lo`) for the pixelated RETRO style.
 function makeTexture(draw, seed = 1, ledSeed = 1) {
-  const c = newCanvas(TEX, TEX);
+  const N = WTEX_HI, sc = N / 64;
+  const c = newCanvas(N, N);
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
-  g.scale(TS, TS);
-  const em = new Uint8Array(TEX * TEX);
+  g.scale(sc, sc);
+  const em = new Uint8Array(N * N);
   const R = rng(seed), L = rng(ledSeed);
   const led = (x, y, w, h, col) => {
     g.fillStyle = col; g.fillRect(x, y, w, h);
-    const x0 = Math.floor(x * TS), x1 = Math.ceil((x + w) * TS), y0 = Math.floor(y * TS), y1 = Math.ceil((y + h) * TS);
+    const x0 = Math.floor(x * sc), x1 = Math.ceil((x + w) * sc), y0 = Math.floor(y * sc), y1 = Math.ceil((y + h) * sc);
     for (let j = y0; j < y1; j++) for (let i = x0; i < x1; i++)
-      if (i >= 0 && i < TEX && j >= 0 && j < TEX) em[j * TEX + i] = 1;
+      if (i >= 0 && i < N && j >= 0 && j < N) em[j * N + i] = 1;
   };
   draw(g, R, led, L);
-  const px = new Uint32Array(g.getImageData(0, 0, TEX, TEX).data.buffer);
-  return { px, em, canvas: c };
+  const px = new Uint32Array(g.getImageData(0, 0, N, N).data.buffer);
+  const c2 = newCanvas(TEX, TEX), g2 = c2.getContext('2d');
+  g2.imageSmoothingEnabled = true; g2.imageSmoothingQuality = 'high';
+  g2.drawImage(c, 0, 0, TEX, TEX);
+  const lpx = new Uint32Array(g2.getImageData(0, 0, TEX, TEX).data.buffer);
+  const lem = new Uint8Array(TEX * TEX), f = N / TEX;
+  for (let j = 0; j < TEX; j++) for (let i = 0; i < TEX; i++) lem[j * TEX + i] = em[(j * f) * N + i * f] | em[(j * f + 1) * N + i * f + 1];
+  return { px, em, canvas: c, lo: { px: lpx, em: lem } };
 }
 
 // Fills a rectangle (design space) with per-texel noise around a base color.
 function noiseFill(g, R, x, y, w, h, r, gg, b, amp) {
-  const X = Math.round(x * TS), Y = Math.round(y * TS), W = Math.round(w * TS), H = Math.round(h * TS);
+  const sc = g.getTransform().a;
+  const X = Math.round(x * sc), Y = Math.round(y * sc), W = Math.round(w * sc), H = Math.round(h * sc);
   const id = g.getImageData(X, Y, W, H), d = id.data;
   for (let i = 0; i < W * H; i++) {
     const n = (R() - 0.5) * amp;
@@ -292,27 +305,41 @@ function drawCeiling(kind) {
 
 /* ----------------------------------------------------------------- sprites */
 
-// Draws a sprite in the 64x64 design space onto a TEX x TEX canvas.
-// outline: adds a dark 2-texel outline so the sprite reads well against the walls.
-function makeSprite(draw, outline = false) {
-  const c = newCanvas(TEX, TEX);
+// Draws a sprite in the 64x64 design space onto a SPR_HI canvas (MODERN), with a
+// TEX x TEX copy in `lo` for RETRO. outline: thin dark outline so it reads against walls.
+// keep: also return the canvas (used to derive the death frames).
+function makeSprite(draw, outline = false, keep = false) {
+  const c = newCanvas(SPR_HI, SPR_HI);
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
-  g.scale(TS, TS);
+  g.scale(STS, STS);
   draw(g);
-  return spriteFromCanvas(c, outline);
+  const spr = spriteFromCanvas(c, outline);
+  if (keep) spr.canvas = c;
+  return spr;
 }
 
 const OUTLINE = 0xff0c0a0a;
+// Converts a canvas to sprite pixels; a canvas larger than TEX also gets its RETRO copy (lo).
 function spriteFromCanvas(c, outline = false) {
+  const spr = spritePixels(c, outline);
+  if (c.width > TEX) {
+    const c2 = newCanvas(TEX, TEX), g2 = c2.getContext('2d');
+    g2.imageSmoothingEnabled = true; g2.imageSmoothingQuality = 'high';
+    g2.drawImage(c, 0, 0, TEX, TEX);
+    spr.lo = spritePixels(c2, outline);
+  } else spr.lo = spr;
+  return spr;
+}
+function spritePixels(c, outline) {
   const g = c.getContext('2d');
   const w = c.width, h = c.height;
   const d = g.getImageData(0, 0, w, h).data;
   const px = new Uint32Array(d.buffer.slice(0));
-  // binary alpha
-  for (let i = 0; i < px.length; i++) if ((px[i] >>> 24) < 110) px[i] = 0; else px[i] |= 0xff000000;
+  // drop faint pixels, keep partial alpha on the edges (blended by the renderer)
+  for (let i = 0; i < px.length; i++) { const a = px[i] >>> 24; if (a < 60) px[i] = 0; else if (a > 230) px[i] |= 0xff000000; }
   if (outline) {
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 1; pass++) {
       const src = px.slice();
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
         const i = y * w + x;
@@ -321,7 +348,7 @@ function spriteFromCanvas(c, outline = false) {
       }
     }
   }
-  return { px, w, h, canvas: c };
+  return { px, w, h };
 }
 
 function ell(g, x, y, rx, ry, col) { g.fillStyle = col; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill(); }
@@ -474,14 +501,15 @@ function drawSpammer(g, phase, atk) {
 
 // Generic death frames: the sprite "glitches" into slices, then a pile of debris.
 function glitchFrame(src, amount) {
-  const c = newCanvas(TEX, TEX), g = c.getContext('2d');
-  const R = rng(amount * 7 + 3), band = 4 * TS;
-  for (let y = 0; y < TEX; y += band) {
-    const off = ((R() - 0.5) * amount * 2 * TS) | 0;
-    g.drawImage(src, 0, y, TEX, band, off, y + amount / 2 * TS, TEX, band);
+  const N = src.width, sc = N / 64;
+  const c = newCanvas(N, N), g = c.getContext('2d');
+  const R = rng(amount * 7 + 3), band = 4 * sc;
+  for (let y = 0; y < N; y += band) {
+    const off = ((R() - 0.5) * amount * 2 * sc) | 0;
+    g.drawImage(src, 0, y, N, band, off, y + amount / 2 * sc, N, band);
   }
   g.globalCompositeOperation = 'source-atop';
-  g.fillStyle = 'rgba(255,0,80,0.3)'; g.fillRect(0, 0, TEX, TEX);
+  g.fillStyle = 'rgba(255,0,80,0.3)'; g.fillRect(0, 0, N, N);
   return spriteFromCanvas(c);
 }
 
@@ -499,13 +527,11 @@ function debrisFrame(colors, seed) {
 }
 
 function buildEnemySprites(drawFn, debrisCols, seed) {
-  const walk = [0, 1].map((p) => makeSprite((g) => drawFn(g, p, false), true));
+  const walk = [0, 1].map((p) => makeSprite((g) => drawFn(g, p, false), true, true));
   const atk = makeSprite((g) => drawFn(g, 0, true), true);
-  return {
-    walk, atk,
-    die: [glitchFrame(walk[0].canvas, 6), glitchFrame(walk[1].canvas, 14)],
-    dead: debrisFrame(debrisCols, seed),
-  };
+  const die = [glitchFrame(walk[0].canvas, 6), glitchFrame(walk[1].canvas, 14)];
+  for (const w of walk) w.canvas = null;   // only needed to derive the death frames
+  return { walk, atk, die, dead: debrisFrame(debrisCols, seed) };
 }
 
 // Cage nut: square M6 nut inside its spring cage (wings)
@@ -710,10 +736,10 @@ function drawShadowIT(g, phase, atk) {
 
 // Faces are small canvases drawn in a design space (w x h), at TS x resolution.
 function face(w, h, draw) {
-  const c = newCanvas(Math.round(w * TS), Math.round(h * TS));
+  const c = newCanvas(Math.round(w * STS), Math.round(h * STS));
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
-  g.scale(TS, TS);
+  g.scale(STS, STS);
   draw(g, w, h);
   return c;
 }
@@ -762,16 +788,16 @@ function quad(g, tex, p0, p1, p2, shadeAmt) {
 const DECOR_FRAMES = 16;
 // Renders a prop in DECOR_FRAMES orientations. `size` = world units covered by the sprite.
 function propFrames(boxes, size, extra) {
-  const ppu = TEX / size;
+  const ppu = SPR_HI / size;
   const radius = Math.max(...boxes.map((b) => Math.hypot(b.w, b.d) / 2 + Math.hypot(b.x, b.y)));
   const margin = radius * Math.sin(PITCH) * ppu + 2;
   const frames = [];
   for (let k = 0; k < DECOR_FRAMES; k++) {
     const yaw = k / DECOR_FRAMES * Math.PI * 2;
-    const c = newCanvas(TEX, TEX), g = c.getContext('2d');
+    const c = newCanvas(SPR_HI, SPR_HI), g = c.getContext('2d');
     g.imageSmoothingEnabled = false;
-    drawBoxes(g, boxes, yaw, ppu, TEX / 2, TEX - margin);
-    if (extra) extra(g, yaw, ppu, TEX / 2, TEX - margin);
+    drawBoxes(g, boxes, yaw, ppu, SPR_HI / 2, SPR_HI - margin);
+    if (extra) extra(g, yaw, ppu, SPR_HI / 2, SPR_HI - margin);
     frames.push(spriteFromCanvas(c, true));
   }
   return { frames, scale: size, z: -margin / ppu };

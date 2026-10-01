@@ -10,7 +10,8 @@
  * recoil and a dynamic muzzle flash.
  */
 const WeaponArt = (() => {
-  const S = 2;                 // texels per logical screen pixel
+  let S = 2;                   // texels per logical screen pixel (2 RETRO, 4 MODERN)
+  let PIXEL = true;            // RETRO: binary alpha, posterized colors, dark outline
   const VW = 480, VHH = 230;   // logical size of the 3D view (matches game.js)
   const CX = 240, CY = 115;    // vanishing point = crosshair
   // per-weapon framing: focal length, screen offset, and a model placement (yaw/pitch around a pivot, then shift)
@@ -121,7 +122,7 @@ const WeaponArt = (() => {
     const c = document.createElement('canvas');
     c.width = VW * S; c.height = VHH * S;
     const g = c.getContext('2d');
-    g.imageSmoothingEnabled = false;
+    g.imageSmoothingEnabled = !PIXEL;
     g.scale(S, S);
     const vis = [];
     for (const f of faces) {
@@ -152,19 +153,21 @@ const WeaponArt = (() => {
         g.fillStyle = `rgb(${Math.min(255, f.col[0] * k) | 0},${Math.min(255, f.col[1] * k) | 0},${Math.min(255, f.col[2] * k) | 0})`;
         g.fill();
         // thin darker seam keeps small parts readable
-        g.strokeStyle = 'rgba(0,0,0,0.18)'; g.lineWidth = 0.5; g.stroke();
+        g.strokeStyle = 'rgba(0,0,0,0.18)'; g.lineWidth = PIXEL ? 0.5 : 0.35; g.stroke();
       }
     }
     return finalize(c);
   }
 
-  // Pixel-art pass: binary alpha, light posterization, dark outline, then crop.
+  // RETRO pixel-art pass: binary alpha, light posterization, dark outline. MODERN keeps
+  // the anti-aliased edges and full color depth. Then crop to the opaque area.
   function finalize(c) {
     const g = c.getContext('2d');
     const w = c.width, h = c.height;
     const id = g.getImageData(0, 0, w, h), d = id.data;
     const a = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) {
+      if (!PIXEL) { if (d[i * 4 + 3] > 0) a[i] = 1; continue; }
       if (d[i * 4 + 3] < 120) { d[i * 4 + 3] = 0; continue; }
       a[i] = 1; d[i * 4 + 3] = 255;
       for (let k = 0; k < 3; k++) d[i * 4 + k] = Math.min(255, Math.round(d[i * 4 + k] / 10) * 10);
@@ -173,7 +176,7 @@ const WeaponArt = (() => {
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (a[i]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; continue; }
-      if ((x > 0 && a[i - 1]) || (x < w - 1 && a[i + 1]) || (y > 0 && a[i - w]) || (y < h - 1 && a[i + w])) {
+      if (PIXEL && ((x > 0 && a[i - 1]) || (x < w - 1 && a[i + 1]) || (y > 0 && a[i - w]) || (y < h - 1 && a[i + w]))) {
         d[i * 4] = 12; d[i * 4 + 1] = 10; d[i * 4 + 2] = 10; d[i * 4 + 3] = 255;
       }
     }
@@ -380,7 +383,9 @@ const WeaponArt = (() => {
 
 
   /* ----------------------------------------------------------- build all */
-  function build() {
+  // opts: {pixel: true} for the RETRO look (2 texels per pixel), {pixel: false} for MODERN (4).
+  function build(opts = { pixel: true }) {
+    PIXEL = opts.pixel; S = PIXEL ? 2 : 4;
     const make = (m, v) => { view = Object.assign({ f: 340, ox: 0, oy: 0 }, v); const r = render(m.faces || m); r.muzzle = m.muzzle ? project(place(m.muzzle)) : null; return r; };
     return {
       keyboard: make(keyboard(), VIEWS.keyboard),

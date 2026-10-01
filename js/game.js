@@ -1,7 +1,8 @@
 'use strict';
 /*
  * DUKE NUTANIX: raycasting engine, Duke Nukem spirit, set in datacenters.
- * Software rendering into a 480x230 buffer (3D view) + high-resolution HUD.
+ * Software rendering of the 3D view at a quality-dependent resolution (480x230 to 960x460),
+ * smoothly upscaled, with the HUD and the weapons drawn at full screen resolution.
  */
 
 const W = 480, H = 270, HUD_H = 40, VH = H - HUD_H, HORIZ = VH / 2;
@@ -106,12 +107,29 @@ function quip(kind, chance = 1, force = false) {
 const view = document.getElementById('view');
 const vctx = view.getContext('2d');
 const vignette = document.getElementById('vignette');
-const scr = newCanvas(W, VH);
-const sctx = scr.getContext('2d');
-const img = sctx.createImageData(W, VH);
-const buf = new Uint32Array(img.data.buffer);
-const zbuf = new Float32Array(W);
-const glow = new Uint8Array(W * VH); // 1 where the pixel emits light (feeds the bloom)
+// The 3D view is rendered at RW x RVH (render scale RS of the 480x230 logical view);
+// layout, HUD and weapons stay in logical units.
+// Two looks: RETRO renders at 480x230 with crisp pixels and 128px textures (Doom-like);
+// MODERN renders at 1.5x (720x346), 256px textures, smooth upscaling and fine weapons.
+let style = 'modern';
+let WTEX = WTEX_HI, WSH = 8, AOSH = 0;   // wall texture size in use, its log2, AO table shift
+const MODERN_SCALE = 1.5;
+let RS = 1, RW = W, RVH = VH, RHZ = HORIZ, RPROJ = PROJ;
+let scr, sctx, img, buf, zbuf, glow; // glow: 1 where the pixel emits light (feeds the bloom)
+function setRenderScale(scale) {
+  RS = scale;
+  RW = Math.round(W * scale / 8) * 8;          // floor casting works in spans of 8 pixels
+  RVH = Math.round(VH * scale / 2) * 2;
+  RHZ = RVH / 2;
+  RPROJ = (RW / 2) / PLANE;
+  scr = newCanvas(RW, RVH);
+  sctx = scr.getContext('2d');
+  img = sctx.createImageData(RW, RVH);
+  buf = new Uint32Array(img.data.buffer);
+  zbuf = new Float32Array(RW);
+  glow = new Uint8Array(RW * RVH);
+  Post.init(RW, RVH);
+}
 let K = 1;
 
 function resize() {
@@ -1036,20 +1054,21 @@ function fogAt(d) {
 }
 
 // Vertical contact shading of walls, by texel row: darker at the foot, a bit at the top.
-const WALL_AO = new Uint16Array(TEX);
-for (let i = 0; i < TEX; i++) {
-  const v = (i + 0.5) / TEX;
+const WALL_AO = new Uint16Array(WTEX_HI);
+for (let i = 0; i < WTEX_HI; i++) {
+  const v = (i + 0.5) / WTEX_HI;
   WALL_AO[i] = Math.round(256 * Math.min(1, 0.82 + v * 1.8) * (v > 0.82 ? 1 - (v - 0.82) * 2.2 : 1));
 }
 
 let fogR = 0, fogG = 0, fogB = 0;
-const SPAN = 8; // W must be a multiple of it
+const SPAN = 8; // RW is a multiple of it
 
 function render() {
   const dirX = Math.cos(P.a), dirY = Math.sin(P.a);
   const plX = -dirY * PLANE, plY = dirX * PLANE;
   const w = L.w, h = L.h;
-  const floorT = Assets.floor, ceilT = Assets.ceil;
+  const HI = style === 'modern';
+  const floorT = HI ? Assets.floor : Assets.floor.map((t) => t.lo), ceilT = HI ? Assets.ceil : Assets.ceil.map((t) => t.lo);
   const concreteT = Assets.concrete[L.def.episode % 5];
   Light.update(L, P);
   [fogR, fogG, fogB] = Light.fog;
@@ -1057,25 +1076,25 @@ function render() {
 
   // floor and ceiling: texel x lightmap x distance, plus fog
   const rdx0 = dirX - plX, rdy0 = dirY - plY, rdx1 = dirX + plX, rdy1 = dirY + plY;
-  for (let y = HORIZ; y < VH; y++) {
-    const p = y - HORIZ + 0.5;
-    const rowD = 0.5 * PROJ / p;
+  for (let y = RHZ; y < RVH; y++) {
+    const p = y - RHZ + 0.5;
+    const rowD = 0.5 * RPROJ / p;
     const s = lightAt(rowD), fg = fogAt(rowD);
     const fr = fogR * fg >> 8, fgg = fogG * fg >> 8, fb = fogB * fg >> 8;
-    const stx = rowD * (rdx1 - rdx0) / W, sty = rowD * (rdy1 - rdy0) / W;
+    const stx = rowD * (rdx1 - rdx0) / RW, sty = rowD * (rdy1 - rdy0) / RW;
     let fx = P.x + rowD * rdx0, fy = P.y + rowD * rdy0;
-    const fo = y * W, co = (VH - 1 - y) * W;
+    const fo = y * RW, co = (RVH - 1 - y) * RW;
     // the lightmap is sampled every SPAN pixels and interpolated in between
     let lv = Light.sample(fx, fy);
     let mr = (lv & 255) * s, mg = ((lv >> 8) & 255) * s, mb = ((lv >> 16) & 255) * s;
-    for (let x0 = 0; x0 < W; x0 += SPAN) {
+    for (let x0 = 0; x0 < RW; x0 += SPAN) {
       lv = Light.sample(fx + stx * SPAN, fy + sty * SPAN);
       const er = (lv & 255) * s, eg = ((lv >> 8) & 255) * s, eb = ((lv >> 16) & 255) * s;
       const dr = (er - mr) / SPAN, dg = (eg - mg) / SPAN, db = (eb - mb) / SPAN;
       for (let x = x0; x < x0 + SPAN; x++, fx += stx, fy += sty, mr += dr, mg += dg, mb += db) {
         if (fx < 0 || fy < 0 || fx >= w || fy >= h) { buf[fo + x] = 0xff000000; buf[co + x] = 0xff000000; continue; }
         const cx = fx | 0, cy = fy | 0, ci = cy * w + cx;
-        const ti = ((((fy - cy) * TEX) | 0) << 7) | (((fx - cx) * TEX) | 0);
+        const ti = ((((fy - cy) * WTEX) | 0) << WSH) | (((fx - cx) * WTEX) | 0);
         buf[fo + x] = litPx(floorT[L.floor[ci]].px[ti], mr, mg, mb, fr, fgg, fb);
         const ct = ceilT[L.ceil[ci]];
         if (ct.em[ti]) { buf[co + x] = ct.px[ti]; glow[co + x] = 1; } else buf[co + x] = litPx(ct.px[ti], mr, mg, mb, fr, fgg, fb);
@@ -1085,23 +1104,23 @@ function render() {
   }
 
   // walls
-  for (let x = 0; x < W; x++) {
-    const cam = 2 * x / W - 1;
+  for (let x = 0; x < RW; x++) {
+    const cam = 2 * x / RW - 1;
     const rdx = dirX + plX * cam, rdy = dirY + plY * cam;
     castRay(P.x, P.y, rdx, rdy);
     const d = Math.max(RH.d, 0.02);
     zbuf[x] = d;
     if (!RH.tile) continue;
-    const lh = PROJ / d;
-    const top = HORIZ - lh / 2;
-    const y0 = Math.max(0, Math.ceil(top)), y1 = Math.min(VH - 1, Math.floor(HORIZ + lh / 2));
+    const lh = RPROJ / d;
+    const top = RHZ - lh / 2;
+    const y0 = Math.max(0, Math.ceil(top)), y1 = Math.min(RVH - 1, Math.floor(RHZ + lh / 2));
     const vi = RH.my * w + RH.mx;
     const ch = String.fromCharCode(RH.tile);
     const vars = ch === '#' || ch === '?' ? concreteT : Assets.walls[ch];
     const frames = vars[L.variant[vi] % vars.length];
-    const tex = frames[(animFrame + L.variant[vi]) % frames.length];
-    let tx = (RH.wx * TEX) | 0;
-    if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = TEX - 1 - tx;
+    const tex0 = frames[(animFrame + L.variant[vi]) % frames.length], tex = HI ? tex0 : tex0.lo;
+    let tx = (RH.wx * WTEX) | 0;
+    if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = WTEX - 1 - tx;
     let s = lightAt(d);
     if (RH.side === 1) s = (s * 0.8) | 0;
     // light the face from the lightmap texel row just in front of it
@@ -1111,14 +1130,14 @@ function render() {
     else lv = Light.sample(P.x + rdx * d, rdy < 0 ? RH.my + 1 + IN : RH.my - IN);
     const mr = ((lv & 255) * s) >> 8, mg = (((lv >> 8) & 255) * s) >> 8, mb = (((lv >> 16) & 255) * s) >> 8;
     const fg = fogAt(d), fr = fogR * fg >> 8, fgg = fogG * fg >> 8, fb = fogB * fg >> 8;
-    const step = TEX / lh;
+    const step = WTEX / lh;
     let tp = (y0 - top) * step;
     const px = tex.px, em = tex.em;
     for (let y = y0; y <= y1; y++, tp += step) {
-      const row = (tp | 0) & (TEX - 1), ti = row << 7 | tx;
-      if (em[ti]) { buf[y * W + x] = px[ti]; glow[y * W + x] = 1; continue; }
-      const k = WALL_AO[row];
-      buf[y * W + x] = litPx(px[ti], mr * k, mg * k, mb * k, fr, fgg, fb);
+      const row = (tp | 0) & (WTEX - 1), ti = row << WSH | tx;
+      if (em[ti]) { buf[y * RW + x] = px[ti]; glow[y * RW + x] = 1; continue; }
+      const k = WALL_AO[row << AOSH];
+      buf[y * RW + x] = litPx(px[ti], mr * k, mg * k, mb * k, fr, fgg, fb);
     }
   }
 
@@ -1168,14 +1187,14 @@ function render() {
 
   if (P.hurtT > 0.15) {
     for (let k = 0; k < 6; k++) {
-      const y = randi(0, VH - 4), hgt = randi(1, 4), off = randi(-12, 12);
+      const y = randi(0, RVH - 4), hgt = randi(1, 4), off = randi(-12, 12) * RS | 0;
       for (let yy = y; yy < y + hgt; yy++) {
-        const row = buf.subarray(yy * W, yy * W + W);
+        const row = buf.subarray(yy * RW, yy * RW + RW);
         row.copyWithin(off > 0 ? off : 0, off > 0 ? 0 : -off);
       }
     }
   }
-  if (Light.high) Post.bloom(buf, glow, W, VH);
+  if (Light.high) Post.bloom(buf, glow, RW, RVH);
   sctx.putImageData(img, 0, 0);
 }
 
@@ -1190,13 +1209,13 @@ function propFrame(A, o) {
 }
 
 function drawSprite(s) {
-  const spr = s.spr, sw = spr.w, sh = spr.h, px = spr.px;
-  const size = s.scale * PROJ / s.ty;
-  const cx = (W / 2) * (1 + s.tx / s.ty);
-  const bottom = HORIZ + (0.5 - s.z) * PROJ / s.ty;
+  const spr = style === 'modern' ? s.spr : s.spr.lo, sw = spr.w, sh = spr.h, px = spr.px;
+  const size = s.scale * RPROJ / s.ty;
+  const cx = (RW / 2) * (1 + s.tx / s.ty);
+  const bottom = RHZ + (0.5 - s.z) * RPROJ / s.ty;
   const top = bottom - size, left = cx - size / 2;
-  const x0 = Math.max(0, Math.ceil(left)), x1 = Math.min(W - 1, Math.floor(left + size));
-  const y0 = Math.max(0, Math.ceil(top)), y1 = Math.min(VH - 1, Math.floor(bottom));
+  const x0 = Math.max(0, Math.ceil(left)), x1 = Math.min(RW - 1, Math.floor(left + size));
+  const y0 = Math.max(0, Math.ceil(top)), y1 = Math.min(RVH - 1, Math.floor(bottom));
   if (x0 > x1 || y0 > y1) return;
   // lit by the lightmap at its feet; bright sprites (projectiles, fx) are self-lit
   let mr = 32768, mg = 32768, mb = 32768, fr = 0, fg = 0, fb = 0;
@@ -1215,8 +1234,14 @@ function drawSprite(s) {
       if (ty >= sh) break;
       const c = px[ty * sw + tx];
       if (!c) continue;
-      buf[y * W + x] = s.flash ? (c | 0xff808080) : litPx(c, mr, mg, mb, fr, fg, fb);
-      glow[y * W + x] = s.bright;
+      const o = y * RW + x;
+      const lc = s.flash ? (c | 0xff808080) : litPx(c, mr, mg, mb, fr, fg, fb);
+      const a = c >>> 24;
+      if (a === 255) { buf[o] = lc; glow[o] = s.bright; continue; }
+      // soft edge: blend with what is behind
+      const d = buf[o], ia = 255 - a;
+      buf[o] = 0xff000000 | ((((lc >> 16) & 255) * a + ((d >> 16) & 255) * ia) >> 8) << 16 |
+        ((((lc >> 8) & 255) * a + ((d >> 8) & 255) * ia) >> 8) << 8 | (((lc & 255) * a + (d & 255) * ia) >> 8);
     }
   }
 }
@@ -1417,7 +1442,8 @@ function drawMap(g) {
 
 function present() {
   vctx.setTransform(1, 0, 0, 1, 0, 0);
-  vctx.imageSmoothingEnabled = false;
+  vctx.imageSmoothingEnabled = style === 'modern';
+  vctx.imageSmoothingQuality = 'high';
   const sh = P.shake > 0 ? P.shake * 7 * K : 0;
   if (sh) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, W * K, VH * K); }
   vctx.drawImage(scr, sh ? rand(-sh, sh) : 0, sh ? rand(-sh, sh) : 0, W * K, VH * K);
@@ -1479,10 +1505,14 @@ function frame(ts) {
   if (L && state !== 'title' && state !== 'loading' && state !== 'select') {
     const t0 = performance.now();
     render(); present();
-    if (state === 'playing' && Light.high && !autoLowered) {
+    if (state === 'playing' && !autoLowered && (Light.high || RS > 1)) {
       renderCost += (performance.now() - t0 - renderCost) * 0.05;
-      slowT = renderCost > 11 ? slowT + dt : 0;
-      if (slowT > 3) { autoLowered = true; toggleGraphics('Slow machine: graphics set to low (G to change)'); }
+      slowT = renderCost > 14 ? slowT + dt : 0;
+      if (slowT > 3) {
+        slowT = 0; renderCost = 0;
+        if (RS > 1) { setRenderScale(1); msg('Slow machine: MODERN style at lower resolution'); }
+        else { autoLowered = true; toggleGraphics('Slow machine: graphics set to low (G to change)'); }
+      }
     }
   }
   requestAnimationFrame(frame);
@@ -1530,6 +1560,7 @@ const CONTROLS = `
     <tr><td>Esc</td><td>Pause</td></tr>
     <tr><td>N / V</td><td>Mute sound / voice</td></tr>
     <tr><td>G</td><td>Graphics quality (high / low)</td></tr>
+    <tr><td>T</td><td>Style: modern / retro (pixelated)</td></tr>
   </table>`;
 
 const actions = {
@@ -1550,6 +1581,7 @@ const actions = {
   resume() { resumeGame(); },
   restart() { INV = cloneInv(INV_START); startLevel(L.idx); },
   title() { showTitle(); },
+  style() { toggleStyle(); const b = document.getElementById('tsty'); if (b) b.textContent = `STYLE: ${style.toUpperCase()}`; },
 };
 
 function showTitle() {
@@ -1570,6 +1602,7 @@ function showTitle() {
     ${cont}
     <button data-act="newGame" class="${s ? '' : 'big'}">NEW GAME</button>
     <button data-act="select">SELECT LEVEL</button>
+    <button data-act="style" id="tsty">STYLE: ${style.toUpperCase()}</button>
     ${CONTROLS}
     <p class="hint">Click inside the game to capture the mouse. Cheats: iddqd, idkfa.</p>
   `);
@@ -1620,14 +1653,30 @@ function pauseGame() {
     <button data-act="restart">RESTART LEVEL</button>
     <button data-act="title">MAIN MENU</button>
     <button id="gfx">GRAPHICS: ${Light.high ? 'HIGH' : 'LOW'}</button>
+    <button id="sty">STYLE: ${style.toUpperCase()}</button>
     <label class="sens">Mouse sensitivity <input type="range" min="0.3" max="2.5" step="0.1" value="${sensitivity}" id="sens"></label>
     ${CONTROLS}
   `);
   const gb = document.getElementById('gfx');
   gb.onclick = () => { toggleGraphics(); gb.textContent = `GRAPHICS: ${Light.high ? 'HIGH' : 'LOW'}`; render(); present(); };
+  const sb = document.getElementById('sty');
+  sb.onclick = () => { toggleStyle(); sb.textContent = `STYLE: ${style.toUpperCase()}`; render(); present(); };
   const s = document.getElementById('sens');
   s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dukenutanix.sens', s.value); } catch (e) { /* ignored */ } };
 }
+
+// RETRO (pixelated, Doom-like) or MODERN (finer, smoothed) look.
+function setStyle(st, quiet) {
+  style = st === 'retro' ? 'retro' : 'modern';
+  const hi = style === 'modern';
+  WTEX = hi ? WTEX_HI : TEX; WSH = Math.log2(WTEX); AOSH = Math.log2(WTEX_HI / WTEX);
+  setRenderScale(hi ? MODERN_SCALE : 1);
+  Assets.weapons = hi ? Assets.weaponsHi : Assets.weaponsLo;
+  view.style.imageRendering = hi ? 'auto' : 'pixelated';
+  try { localStorage.setItem('dukenutanix.style', style); } catch (e) { /* ignored */ }
+  if (!quiet && L) msg(hi ? 'Style: MODERN (finer graphics)' : 'Style: RETRO (pixelated, Doom-like)');
+}
+function toggleStyle() { setStyle(style === 'modern' ? 'retro' : 'modern'); }
 
 // HIGH: dynamic lights, bloom and vignette. LOW keeps the baked lighting only.
 function toggleGraphics(note) {
@@ -1736,6 +1785,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'ControlLeft' || e.code === 'ControlRight') firing = true;
   if (e.key === 'n' || e.key === 'N') msg(Sfx.toggleMute() ? 'Sound off' : 'Sound on');
   if (e.key === 'g' || e.key === 'G') toggleGraphics();
+  if (e.key === 't' || e.key === 'T') toggleStyle();
   if (e.key === 'v' || e.key === 'V') {
     voiceOn = !voiceOn;
     if (!voiceOn && window.speechSynthesis) speechSynthesis.cancel();
@@ -1801,8 +1851,11 @@ function boot() {
     if (localStorage.getItem('dukenutanix.gfx') === 'low') { Light.high = false; vignette.hidden = true; }
   } catch (e) { /* ignored */ }
   buildAssets();
-  Post.init(W, VH);
-  Assets.weapons = WeaponArt.build();
+  Assets.weaponsLo = WeaponArt.build({ pixel: true });
+  Assets.weaponsHi = WeaponArt.build({ pixel: false });
+  let st = 'modern';
+  try { st = localStorage.getItem('dukenutanix.style') || 'modern'; } catch (e) { /* ignored */ }
+  setStyle(st, true);
   showTitle();
   requestAnimationFrame(frame);
   // debug hook for automated tests
