@@ -17,6 +17,15 @@ The look is deliberately pixelated:
 - **Enemies and items** get a dark outline so they stand out from the racks.
 - **Weapons in hand** are small 3D models (boxes and tubes) rendered in perspective with per-face lighting,
   then pixelated and outlined. They are drawn at twice the resolution of the 3D view, dim in dark areas and light up when firing.
+- **Lighting** is colored and baked per level into a lightmap: pools of light under the ceiling panels (with shadows),
+  green glow from the exit signs, red and blue from badge doors, LED spill from the racks, and ambient occlusion along the walls.
+  Each episode has its own mood and distance fog (icy blue in the cooling zone, sodium lamps in the archives...).
+- **Dynamic lights**: muzzle flashes, projectiles, explosions and armed UPS batteries light up walls, floors and enemies.
+- **Bloom** around LEDs, screens, neon panels and plasma, plus a soft vignette.
+
+All of this runs in the software renderer at 480x230 and costs a few milliseconds per frame. Press **G** to switch to
+the LOW graphics mode (baked lighting only, no dynamic lights, bloom or vignette); the game also drops to LOW by itself
+on a machine that can't keep up.
 
 ## Play
 
@@ -40,8 +49,9 @@ Progress is saved in the browser (CONTINUE button, and a level select for unlock
 | 1-8 / wheel | Switch weapon |
 | Shift | Run |
 | Tab / M | Datacenter map |
-| Esc / P | Pause (mouse sensitivity) |
+| Esc / P | Pause (mouse sensitivity, graphics) |
 | N / V | Mute sound / the admin's voice |
+| G | Graphics quality (high / low) |
 
 Cheat codes: `iddqd` (root mode) and `idkfa`.
 
@@ -127,6 +137,7 @@ js/levelgen.js           procedural generator + map validation
 js/levels.js             episodes, level names, hand-drawn levels, difficulty settings
 js/textures.js           textures, rack logos, sprites
 js/weapons.js            first-person weapon models and their pre-rendering
+js/lighting.js           lightmap baking, dynamic lights, bloom
 js/audio.js              synthesized sound effects
 js/game.js               raycasting engine, AI, weapons, HUD, save game, game loop
 tools/validate-levels.js checks all 50 levels

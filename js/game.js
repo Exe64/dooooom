@@ -105,11 +105,13 @@ function quip(kind, chance = 1, force = false) {
 
 const view = document.getElementById('view');
 const vctx = view.getContext('2d');
+const vignette = document.getElementById('vignette');
 const scr = newCanvas(W, VH);
 const sctx = scr.getContext('2d');
 const img = sctx.createImageData(W, VH);
 const buf = new Uint32Array(img.data.buffer);
 const zbuf = new Float32Array(W);
+const glow = new Uint8Array(W * VH); // 1 where the pixel emits light (feeds the bloom)
 let K = 1;
 
 function resize() {
@@ -122,6 +124,9 @@ function resize() {
   view.width = Math.round(cw * dpr);
   view.height = Math.round(ch * dpr);
   K = view.width / W;
+  // the vignette is a CSS layer over the 3D view: composited by the browser for free
+  const vg = view.getBoundingClientRect();
+  Object.assign(vignette.style, { left: vg.left + 'px', top: vg.top + 'px', width: cw + 'px', height: (ch * VH / H) + 'px' });
 }
 window.addEventListener('resize', resize);
 
@@ -211,6 +216,7 @@ function loadLevel(idx) {
   Object.assign(P, { bobPhase: 0, bobAmt: 0, wAnim: 0, fireCd: 0, raise: 1, flashT: 0, hurtT: 0, pickT: 0, dead: false, deadT: 0, spin: 0,
     faceMood: '', faceT: 0, look: 0, lookT: 0, hurtDir: 0, shake: 0, boostT: 0, nutT: 0 });
   computeFlow();
+  Light.bake(L);
 }
 
 function spawnEnemy(type, x, y) {
@@ -1006,15 +1012,38 @@ function blockedProj(x, y) {
 
 /* ------------------------------------------------------------- rendering */
 
+// Pixel c lit per channel by m (texel x m >> 15, so 128 x 256 = 1.0) plus fog.
+function litPx(c, mr, mg, mb, fr, fg, fb) {
+  let r = ((c & 255) * mr >> 15) + fr, g = (((c >> 8) & 255) * mg >> 15) + fg, b = (((c >> 16) & 255) * mb >> 15) + fb;
+  if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+  return 0xff000000 | (b << 16) | (g << 8) | r;
+}
+
 function shade(c, s) {
   return 0xff000000 | ((((c >> 16) & 255) * s >> 8) << 16) | ((((c >> 8) & 255) * s >> 8) << 8) | ((c & 255) * s >> 8);
 }
 
 function lightAt(d) {
-  const amb = L.def.ambient + (P.flashT > 0 ? 0.35 : 0);
-  const s = 256 * amb / (1 + d * 0.1 + d * d * 0.012);
+  const amb = 0.62 + L.def.ambient * 0.38 + (P.flashT > 0 ? 0.12 : 0);
+  const s = 256 * amb / (1 + d * 0.07 + d * d * 0.009);
   return s > 256 ? 256 : s | 0;
 }
+
+// Distance fog: 0..256 share of the episode fog color added to a pixel.
+function fogAt(d) {
+  const f = 256 * (1 - Math.exp(-d * 0.075));
+  return f > 200 ? 200 : f | 0;
+}
+
+// Vertical contact shading of walls, by texel row: darker at the foot, a bit at the top.
+const WALL_AO = new Uint16Array(TEX);
+for (let i = 0; i < TEX; i++) {
+  const v = (i + 0.5) / TEX;
+  WALL_AO[i] = Math.round(256 * Math.min(1, 0.82 + v * 1.8) * (v > 0.82 ? 1 - (v - 0.82) * 2.2 : 1));
+}
+
+let fogR = 0, fogG = 0, fogB = 0;
+const SPAN = 8; // W must be a multiple of it
 
 function render() {
   const dirX = Math.cos(P.a), dirY = Math.sin(P.a);
@@ -1022,23 +1051,36 @@ function render() {
   const w = L.w, h = L.h;
   const floorT = Assets.floor, ceilT = Assets.ceil;
   const concreteT = Assets.concrete[L.def.episode % 5];
+  Light.update(L, P);
+  [fogR, fogG, fogB] = Light.fog;
+  glow.fill(0);
 
-  // floor and ceiling
+  // floor and ceiling: texel x lightmap x distance, plus fog
   const rdx0 = dirX - plX, rdy0 = dirY - plY, rdx1 = dirX + plX, rdy1 = dirY + plY;
   for (let y = HORIZ; y < VH; y++) {
     const p = y - HORIZ + 0.5;
     const rowD = 0.5 * PROJ / p;
-    const s = lightAt(rowD);
+    const s = lightAt(rowD), fg = fogAt(rowD);
+    const fr = fogR * fg >> 8, fgg = fogG * fg >> 8, fb = fogB * fg >> 8;
     const stx = rowD * (rdx1 - rdx0) / W, sty = rowD * (rdy1 - rdy0) / W;
     let fx = P.x + rowD * rdx0, fy = P.y + rowD * rdy0;
     const fo = y * W, co = (VH - 1 - y) * W;
-    for (let x = 0; x < W; x++, fx += stx, fy += sty) {
-      if (fx < 0 || fy < 0 || fx >= w || fy >= h) { buf[fo + x] = 0xff000000; buf[co + x] = 0xff000000; continue; }
-      const cx = fx | 0, cy = fy | 0, ci = cy * w + cx;
-      const ti = ((((fy - cy) * TEX) | 0) << 7) | (((fx - cx) * TEX) | 0);
-      buf[fo + x] = shade(floorT[L.floor[ci]].px[ti], s);
-      const ct = ceilT[L.ceil[ci]];
-      buf[co + x] = ct.em[ti] ? ct.px[ti] : shade(ct.px[ti], s);
+    // the lightmap is sampled every SPAN pixels and interpolated in between
+    let lv = Light.sample(fx, fy);
+    let mr = (lv & 255) * s, mg = ((lv >> 8) & 255) * s, mb = ((lv >> 16) & 255) * s;
+    for (let x0 = 0; x0 < W; x0 += SPAN) {
+      lv = Light.sample(fx + stx * SPAN, fy + sty * SPAN);
+      const er = (lv & 255) * s, eg = ((lv >> 8) & 255) * s, eb = ((lv >> 16) & 255) * s;
+      const dr = (er - mr) / SPAN, dg = (eg - mg) / SPAN, db = (eb - mb) / SPAN;
+      for (let x = x0; x < x0 + SPAN; x++, fx += stx, fy += sty, mr += dr, mg += dg, mb += db) {
+        if (fx < 0 || fy < 0 || fx >= w || fy >= h) { buf[fo + x] = 0xff000000; buf[co + x] = 0xff000000; continue; }
+        const cx = fx | 0, cy = fy | 0, ci = cy * w + cx;
+        const ti = ((((fy - cy) * TEX) | 0) << 7) | (((fx - cx) * TEX) | 0);
+        buf[fo + x] = litPx(floorT[L.floor[ci]].px[ti], mr, mg, mb, fr, fgg, fb);
+        const ct = ceilT[L.ceil[ci]];
+        if (ct.em[ti]) { buf[co + x] = ct.px[ti]; glow[co + x] = 1; } else buf[co + x] = litPx(ct.px[ti], mr, mg, mb, fr, fgg, fb);
+      }
+      mr = er; mg = eg; mb = eb;
     }
   }
 
@@ -1061,13 +1103,22 @@ function render() {
     let tx = (RH.wx * TEX) | 0;
     if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = TEX - 1 - tx;
     let s = lightAt(d);
-    if (RH.side === 1) s = (s * 0.78) | 0;
+    if (RH.side === 1) s = (s * 0.8) | 0;
+    // light the face from the lightmap texel row just in front of it
+    const IN = 0.5 / LG;
+    let lv;
+    if (RH.side === 0) lv = Light.sample(rdx < 0 ? RH.mx + 1 + IN : RH.mx - IN, P.y + rdy * d);
+    else lv = Light.sample(P.x + rdx * d, rdy < 0 ? RH.my + 1 + IN : RH.my - IN);
+    const mr = ((lv & 255) * s) >> 8, mg = (((lv >> 8) & 255) * s) >> 8, mb = (((lv >> 16) & 255) * s) >> 8;
+    const fg = fogAt(d), fr = fogR * fg >> 8, fgg = fogG * fg >> 8, fb = fogB * fg >> 8;
     const step = TEX / lh;
     let tp = (y0 - top) * step;
     const px = tex.px, em = tex.em;
     for (let y = y0; y <= y1; y++, tp += step) {
-      const ti = ((tp | 0) & (TEX - 1)) << 7 | tx;
-      buf[y * W + x] = em[ti] ? px[ti] : shade(px[ti], s);
+      const row = (tp | 0) & (TEX - 1), ti = row << 7 | tx;
+      if (em[ti]) { buf[y * W + x] = px[ti]; glow[y * W + x] = 1; continue; }
+      const k = WALL_AO[row];
+      buf[y * W + x] = litPx(px[ti], mr * k, mg * k, mb * k, fr, fgg, fb);
     }
   }
 
@@ -1079,7 +1130,7 @@ function render() {
     const ty = invDet * (-plY * sx + plX * sy);
     if (ty < 0.15) return;
     const tx = invDet * (dirY * sx - dirX * sy);
-    list.push({ spr, scale, z, flash, bright, tx, ty });
+    list.push({ spr, scale, z, flash, bright: bright ? 1 : 0, tx, ty, x, y });
   };
   const frameOf = (a, t, fps) => (Array.isArray(a) ? a[((t * fps) | 0) % a.length] : a);
   for (const d of L.decor) { const A = Assets.decor[d.type]; add(d.x, d.y, propFrame(A, d), A.scale, A.z); }
@@ -1124,6 +1175,7 @@ function render() {
       }
     }
   }
+  if (Light.high) Post.bloom(buf, glow, W, VH);
   sctx.putImageData(img, 0, 0);
 }
 
@@ -1146,7 +1198,13 @@ function drawSprite(s) {
   const x0 = Math.max(0, Math.ceil(left)), x1 = Math.min(W - 1, Math.floor(left + size));
   const y0 = Math.max(0, Math.ceil(top)), y1 = Math.min(VH - 1, Math.floor(bottom));
   if (x0 > x1 || y0 > y1) return;
-  const lt = s.bright ? 256 : lightAt(s.ty);
+  // lit by the lightmap at its feet; bright sprites (projectiles, fx) are self-lit
+  let mr = 32768, mg = 32768, mb = 32768, fr = 0, fg = 0, fb = 0;
+  if (!s.bright) {
+    const lt = lightAt(s.ty), lv = Light.sample(s.x, s.y), f = fogAt(s.ty);
+    mr = (lv & 255) * lt; mg = ((lv >> 8) & 255) * lt; mb = ((lv >> 16) & 255) * lt;
+    fr = fogR * f >> 8; fg = fogG * f >> 8; fb = fogB * f >> 8;
+  }
   const inv = sw / size;
   for (let x = x0; x <= x1; x++) {
     if (s.ty >= zbuf[x]) continue;
@@ -1157,7 +1215,8 @@ function drawSprite(s) {
       if (ty >= sh) break;
       const c = px[ty * sw + tx];
       if (!c) continue;
-      buf[y * W + x] = s.flash ? (c | 0xff808080) : shade(c, lt);
+      buf[y * W + x] = s.flash ? (c | 0xff808080) : litPx(c, mr, mg, mb, fr, fg, fb);
+      glow[y * W + x] = s.bright;
     }
   }
 }
@@ -1410,11 +1469,22 @@ function update(dt) {
 }
 
 let last = 0;
+// Average render cost while playing: on a machine too slow for the HIGH
+// effects, quality drops to LOW once (the player can switch back with G).
+let renderCost = 0, slowT = 0, autoLowered = false;
 function frame(ts) {
   const dt = Math.min(0.05, (ts - last) / 1000 || 0);
   last = ts;
   if (state === 'playing') update(dt);
-  if (L && state !== 'title' && state !== 'loading' && state !== 'select') { render(); present(); }
+  if (L && state !== 'title' && state !== 'loading' && state !== 'select') {
+    const t0 = performance.now();
+    render(); present();
+    if (state === 'playing' && Light.high && !autoLowered) {
+      renderCost += (performance.now() - t0 - renderCost) * 0.05;
+      slowT = renderCost > 11 ? slowT + dt : 0;
+      if (slowT > 3) { autoLowered = true; toggleGraphics('Slow machine: graphics set to low (G to change)'); }
+    }
+  }
   requestAnimationFrame(frame);
 }
 
@@ -1459,6 +1529,7 @@ const CONTROLS = `
     <tr><td>Tab / M</td><td>Datacenter map</td></tr>
     <tr><td>Esc</td><td>Pause</td></tr>
     <tr><td>N / V</td><td>Mute sound / voice</td></tr>
+    <tr><td>G</td><td>Graphics quality (high / low)</td></tr>
   </table>`;
 
 const actions = {
@@ -1548,11 +1619,22 @@ function pauseGame() {
     <button data-act="resume" class="big">RESUME</button>
     <button data-act="restart">RESTART LEVEL</button>
     <button data-act="title">MAIN MENU</button>
+    <button id="gfx">GRAPHICS: ${Light.high ? 'HIGH' : 'LOW'}</button>
     <label class="sens">Mouse sensitivity <input type="range" min="0.3" max="2.5" step="0.1" value="${sensitivity}" id="sens"></label>
     ${CONTROLS}
   `);
+  const gb = document.getElementById('gfx');
+  gb.onclick = () => { toggleGraphics(); gb.textContent = `GRAPHICS: ${Light.high ? 'HIGH' : 'LOW'}`; render(); present(); };
   const s = document.getElementById('sens');
   s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dukenutanix.sens', s.value); } catch (e) { /* ignored */ } };
+}
+
+// HIGH: dynamic lights, bloom and vignette. LOW keeps the baked lighting only.
+function toggleGraphics(note) {
+  Light.high = !Light.high;
+  vignette.hidden = !Light.high;
+  try { localStorage.setItem('dukenutanix.gfx', Light.high ? 'high' : 'low'); } catch (e) { /* ignored */ }
+  msg(note || (Light.high ? 'Graphics: high' : 'Graphics: low (faster)'));
 }
 
 function resumeGame() {
@@ -1653,6 +1735,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape' || e.code === 'KeyP') pauseGame();
   if (e.code === 'ControlLeft' || e.code === 'ControlRight') firing = true;
   if (e.key === 'n' || e.key === 'N') msg(Sfx.toggleMute() ? 'Sound off' : 'Sound on');
+  if (e.key === 'g' || e.key === 'G') toggleGraphics();
   if (e.key === 'v' || e.key === 'V') {
     voiceOn = !voiceOn;
     if (!voiceOn && window.speechSynthesis) speechSynthesis.cancel();
@@ -1715,8 +1798,10 @@ function boot() {
   try {
     const s = localStorage.getItem('dukenutanix.sens'); if (s) sensitivity = +s;
     if (localStorage.getItem('dukenutanix.voice') === '0') voiceOn = false;
+    if (localStorage.getItem('dukenutanix.gfx') === 'low') { Light.high = false; vignette.hidden = true; }
   } catch (e) { /* ignored */ }
   buildAssets();
+  Post.init(W, VH);
   Assets.weapons = WeaponArt.build();
   showTitle();
   requestAnimationFrame(frame);
