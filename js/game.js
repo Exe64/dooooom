@@ -111,7 +111,10 @@ const vignette = document.getElementById('vignette');
 // logical view, 1.5x by default), 256px textures, colored lighting, smooth upscaling;
 // layout, HUD and weapons stay in logical units. RETRO: js/retro.js, Doom's 320x200
 // indexed-color renderer, shown at 4:3 and stepped at 35 Hz.
+// MODERN runs on the GPU (js/gl.js) when WebGL2 is available, with this file's
+// software renderer as the fallback; the 2D canvas then only carries the weapon and HUD.
 let style = 'modern';
+let useGL = false, glDead = false;
 const WTEX = WTEX_HI, WSH = 8;
 const MODERN_SCALE = 1.5;
 let RS = 1, RW = W, RVH = VH, RHZ = HORIZ, RPROJ = PROJ;
@@ -146,6 +149,7 @@ function resize() {
   // the vignette is a CSS layer over the 3D view: composited by the browser for free
   const vg = view.getBoundingClientRect();
   Object.assign(vignette.style, { left: vg.left + 'px', top: vg.top + 'px', width: cw + 'px', height: (ch * VH / H) + 'px' });
+  GLR.layout(vg.left, vg.top, cw, ch * VH / H, dpr);
 }
 window.addEventListener('resize', resize);
 
@@ -233,7 +237,7 @@ function loadLevel(idx) {
     if (RH.d > best) { best = RH.d; P.a = a; }
   }
   Object.assign(P, { bobPhase: 0, bobAmt: 0, wAnim: 0, fireCd: 0, raise: 1, flashT: 0, hurtT: 0, pickT: 0, dead: false, deadT: 0, spin: 0,
-    faceMood: '', faceT: 0, look: 0, lookT: 0, hurtDir: 0, shake: 0, boostT: 0, nutT: 0 });
+    faceMood: '', faceT: 0, look: 0, lookT: 0, hurtDir: 0, shake: 0, boostT: 0, nutT: 0, pitch: 0 });
   computeFlow();
   Light.bake(L);
 }
@@ -381,7 +385,7 @@ function msg(text) {
 /* ---------------------------------------------------------------- player */
 
 const keys = {};
-let mouseDX = 0, firing = false, showMap = false;
+let mouseDX = 0, mouseDY = 0, firing = false, showMap = false;
 let sensitivity = 1;
 
 function useAction() {
@@ -448,6 +452,9 @@ function updatePlayer(dt) {
   const turn = ((keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0));
   P.a += turn * 2.8 * dt + mouseDX * 0.0022 * sensitivity;
   mouseDX = 0;
+  // looking up and down (GPU renderer only; aiming stays automatic in height)
+  if (useGL) P.pitch = Math.max(-0.6, Math.min(0.6, P.pitch - mouseDY * 0.0022 * sensitivity));
+  mouseDY = 0;
   const fwd = ((keys.KeyW || keys.ArrowUp) ? 1 : 0) - ((keys.KeyS || keys.ArrowDown) ? 1 : 0);
   const str = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
   const dx = Math.cos(P.a), dy = Math.sin(P.a);
@@ -1463,13 +1470,26 @@ function drawMap(g) {
   g.fillText('DATACENTER MAP: ' + L.def.name, W / 2, 12);
 }
 
+// The 3D view through the GPU renderer; the 2D canvas over it stays transparent there.
+function renderGL() {
+  const sh = P.shake > 0 ? P.shake * 7 : 0;
+  GLR.render({
+    L, P, anim: animFrame,
+    shakeX: sh ? rand(-sh, sh) / W : 0, shakeY: sh ? rand(-sh, sh) / VH : 0,
+    collect: (add) => collectSprites(add, false),
+  });
+}
+
 function present() {
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.imageSmoothingEnabled = style === 'modern';
   vctx.imageSmoothingQuality = 'high';
   const sh = P.shake > 0 ? P.shake * 7 * K : 0;
-  if (sh) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, W * K, VH * K); }
-  vctx.drawImage(scr, sh ? rand(-sh, sh) : 0, sh ? rand(-sh, sh) : 0, W * K, VH * K);
+  if (useGL) vctx.clearRect(0, 0, W * K, VH * K);
+  else {
+    if (sh) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, W * K, VH * K); }
+    vctx.drawImage(scr, sh ? rand(-sh, sh) : 0, sh ? rand(-sh, sh) : 0, W * K, VH * K);
+  }
   vctx.setTransform(K, 0, 0, K, 0, 0);
   const g = vctx;
   g.save(); g.beginPath(); g.rect(0, 0, W, VH); g.clip();
@@ -1520,7 +1540,7 @@ function update(dt) {
 // Draws the current frame in the active style (also used by the pause menu).
 function drawFrame() {
   if (style === 'retro') Retro.frame();
-  else { render(); present(); }
+  else { if (useGL) renderGL(); else render(); present(); }
 }
 
 let last = 0, tics = 0;
@@ -1543,6 +1563,21 @@ function frame(ts) {
   const dt = Math.min(0.05, raw);
   if (state === 'playing') update(dt);
   if (shown) {
+    if (useGL) {
+      renderGL(); present();
+      // the GPU works asynchronously: judge it by the time between frames
+      if (state === 'playing' && !autoLowered) {
+        renderCost += (raw * 1000 - renderCost) * 0.05;
+        slowT = renderCost > 28 ? slowT + dt : 0;
+        if (slowT > 3) {
+          slowT = 0; renderCost = 0;
+          if (GLR.degrade()) msg('Slow machine: lower 3D resolution');
+          else { autoLowered = true; if (Light.high) toggleGraphics('Slow machine: graphics set to low (G to change)'); }
+        }
+      }
+      requestAnimationFrame(frame);
+      return;
+    }
     const t0 = performance.now();
     render(); present();
     if (state === 'playing' && !autoLowered && (Light.high || RS > 1)) {
@@ -1711,6 +1746,9 @@ function setStyle(st, quiet) {
   const hi = style === 'modern';
   if (hi) setRenderScale(MODERN_SCALE);
   else Retro.init();
+  useGL = hi && !glDead && GLR.init(document.getElementById('gl'));
+  if (GLR.canvas) GLR.canvas.style.display = useGL ? 'block' : 'none';
+  view.style.background = useGL ? 'transparent' : '';
   Assets.weapons = hi ? Assets.weaponsHi : Assets.weaponsRetro;
   view.style.imageRendering = hi ? 'auto' : 'pixelated';
   resize();
@@ -1852,8 +1890,9 @@ window.addEventListener('mousemove', (e) => {
   if (state !== 'playing' || document.pointerLockElement !== view) return;
   // Chrome sometimes sends a huge movementX right after pointer lock
   if (skipMouse > 0) { skipMouse--; return; }
-  if (Math.abs(e.movementX) > 250) return;
+  if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
   mouseDX += e.movementX;
+  mouseDY += e.movementY;
 });
 view.addEventListener('wheel', (e) => {
   if (state !== 'playing') return;
@@ -1866,7 +1905,7 @@ view.addEventListener('contextmenu', (e) => e.preventDefault());
 
 let hadLock = false;
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement === view) { hadLock = true; skipMouse = 2; mouseDX = 0; }
+  if (document.pointerLockElement === view) { hadLock = true; skipMouse = 2; mouseDX = 0; mouseDY = 0; }
   else if (hadLock && state === 'playing') pauseGame();
 });
 
@@ -1892,6 +1931,7 @@ function boot() {
     if (localStorage.getItem('dukenutanix.gfx') === 'low') { Light.high = false; vignette.hidden = true; }
   } catch (e) { /* ignored */ }
   buildAssets();
+  GLR.onLost = () => { glDead = true; setStyle(style, true); };
   Assets.weaponsRetro = WeaponArt.build({ pixel: true, s: 320 / W, sy: 320 / W / 1.2 });
   Assets.weaponsHi = WeaponArt.build({ pixel: false });
   let st = 'modern';

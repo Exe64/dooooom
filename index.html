@@ -20,13 +20,14 @@
       color: #d8dde3; font-family: "Press Start 2P", monospace;
     }
     body { display: flex; align-items: center; justify-content: center; }
-    #view { display: block; image-rendering: pixelated; background: #000; cursor: crosshair; }
+    #view { display: block; position: relative; z-index: 1; image-rendering: pixelated; background: #000; cursor: crosshair; }
+    #gl { position: fixed; z-index: 0; pointer-events: none; display: none; background: #000; }
     #vignette {
-      position: fixed; pointer-events: none;
+      position: fixed; z-index: 2; pointer-events: none;
       background: radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,0.5) 100%);
     }
     #overlay {
-      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      position: fixed; z-index: 10; inset: 0; display: flex; align-items: center; justify-content: center;
       background: radial-gradient(ellipse at center, rgba(0,20,8,0.72), rgba(0,0,0,0.92));
       padding: 16px; overflow-y: auto;
     }
@@ -78,6 +79,7 @@
   </style>
 </head>
 <body>
+  <canvas id="gl"></canvas>
   <canvas id="view" width="960" height="540"></canvas>
   <div id="vignette"></div>
   <div id="overlay"><div id="panel"><h2>LOADING DATACENTER...</h2></div></div>
@@ -89,6 +91,7 @@
   <script src="js/weapons.js"></script>
   <script src="js/lighting.js"></script>
   <script src="js/retro.js"></script>
+  <script src="js/gl.js"></script>
   <script src="js/game.js"></script>
 </body>
 </html>
