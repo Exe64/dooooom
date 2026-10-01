@@ -1474,7 +1474,7 @@ function drawMap(g) {
 function renderGL() {
   const sh = P.shake > 0 ? P.shake * 7 : 0;
   GLR.render({
-    L, P, anim: animFrame,
+    L, P, inv: INV, anim: animFrame,
     shakeX: sh ? rand(-sh, sh) / W : 0, shakeY: sh ? rand(-sh, sh) / VH : 0,
     collect: (add) => collectSprites(add, false),
   });

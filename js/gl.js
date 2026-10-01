@@ -2,13 +2,24 @@
 /*
  * MODERN style on the GPU (WebGL2).
  *
- * The grid map becomes real geometry: wall faces, floor and ceiling quads,
- * sliding doors and secret walls, drawn with depth testing at the screen's
- * native resolution. Textures (the same procedural canvases as the software
- * renderer) live in texture arrays with mipmaps and anisotropic filtering, so
- * distant floors and racks no longer shimmer. Billboards (monsters, items,
- * projectiles) are instanced quads tested against the depth buffer.
+ * Geometry: the grid map becomes real geometry (wall faces, floor and ceiling
+ * quads, sliding doors and secret walls) drawn with depth testing at the
+ * screen's native resolution. Textures (the same procedural canvases as the
+ * software renderer) live in texture arrays with mipmaps and anisotropic
+ * filtering. Billboards are instanced quads tested against the depth buffer.
  * The camera can look up and down.
+ *
+ * Lighting, per pixel:
+ * - a directional lightmap baked per level at 8 texels per cell: the light of
+ *   the ceiling panels (soft shadows from 4 points on each panel) and of the
+ *   glowing walls, plus where that light comes from (mean light position), so
+ *   that normal maps and highlights react to the real lamps;
+ * - normal, gloss and specular maps derived from the textures (grooves between
+ *   rack units, rivets, floor tiles);
+ * - up to 16 dynamic point lights (muzzle flashes, projectiles, explosions,
+ *   armed UPS) with wall shadows traced through the map grid in the shader;
+ * - planar reflections on the raised floor: the scene is drawn mirrored under
+ *   the floor at half resolution, then blurred by mipmaps according to gloss.
  *
  * The game logic stays in game.js; this module only draws a frame from the
  * level state. If WebGL2 is missing, game.js keeps the software renderer.
@@ -17,17 +28,20 @@ const GLR = (() => {
   let gl = null, cv = null, ok = false;
   let curL = null;
   let progWorld, progSprite;
-  let worldVAO = null, worldCount = 0, worldBufs = [];
+  let worldVAO = null, worldCount = 0, floorCount = 0, worldBufs = [];
   let doorVAO = null, doorVBO = null, doorIBO = null, doorCount = 0;
   let spriteVAO = null, spriteInst = null;
-  let texWalls = null, texSprites = null, texLight = null;
-  let aniso = null;
+  let texWalls = null, texNrm = null, texSprites = null, texLightA = null, texLightB = null, texCells = null, texBlack = null;
+  let reflFBO = null, reflTex = null, reflDepth = null, rw = 0, rh = 0;
+  let aniso = null, floatOK = false;
   let cssW = 1, cssH = 1, dpr = 1, scale = 1, bw = 1, bh = 1;
 
   const NEAR = 0.02, FAR = 120;
   const TAN_H = 0.8;                     // PLANE in game.js: 77 degree horizontal field of view
   const VSTRIDE = 15;                    // pos3 uv2 nrm3 tan3 tex4 (layer base, frames, phase, kind)
   const KIND_WALL = 0, KIND_FLOOR = 1, KIND_CEIL = 2, KIND_DOOR = 3;
+  const LG2 = 8;                         // lightmap texels per map cell
+  const MAX_DL = 16;                     // dynamic lights per frame
 
   /* ------------------------------------------------------------ shaders */
   const WORLD_VS = `#version 300 es
@@ -38,54 +52,144 @@ const GLR = (() => {
   layout(location=4) in vec4 aTex;
   uniform mat4 uVP;
   uniform float uAnim;
+  uniform float uMirror;
   uniform vec2 uJitter;
-  out vec3 vPos; out vec2 vUv; out vec3 vNrm;
+  out vec3 vPos; out vec2 vUv; out vec3 vNrm; out vec3 vTan;
   flat out float vLayer; flat out float vKind;
   void main() {
-    vPos = aPos; vUv = aUv; vNrm = aNrm;
+    vPos = aPos; vUv = aUv; vNrm = aNrm; vTan = aTan;
     vLayer = aTex.x + mod(uAnim + aTex.z, aTex.y);
     vKind = aTex.w;
-    gl_Position = uVP * vec4(aPos, 1.0);
+    gl_Position = uVP * vec4(aPos.xy, aPos.z * uMirror, 1.0);
     gl_Position.xy += uJitter * gl_Position.w;
   }`;
 
-  const COMMON_FS = `
-  uniform sampler2D uLight;      // baked lightmap: 1.0 = 128/255
+  // Shared lighting: baked directional lightmap + dynamic lights + fog.
+  const LIGHTING = `
+  uniform sampler2D uLightA;     // rgb: direct light of lamps and glowing walls, a: ambient occlusion
+  uniform sampler2D uLightB;     // xy: offset to the mean light position (cells), z: its height
+  uniform sampler2D uCells;      // r: blocks light (walls, closed doors)
   uniform vec2 uMapSize;
   uniform vec3 uEye;
+  uniform vec3 uAmbient;
   uniform vec3 uFog;
-  uniform float uAmb;
-  vec3 lightmap(vec2 p) { return texture(uLight, p / uMapSize).rgb * (255.0 / 128.0); }
-  // distance falloff of the software renderer (lightAt), in 0..1
-  float falloff(float d) { return min(1.0, uAmb / (1.0 + d * 0.07 + d * d * 0.009)); }
-  float fogAmt(float d) { return min(200.0 / 256.0, 1.0 - exp(-d * 0.075)); }
-  vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
-  vec3 toSrgb(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)); }
+  uniform float uEmissive;
+  uniform float uExposure;
+  uniform float uMirror;
+  uniform vec4 uDL[${MAX_DL}];   // dynamic lights: position, radius
+  uniform vec4 uDC[${MAX_DL}];   // color x strength
+  uniform int uDN;
+
+  // 1 when the segment a-b (map plane) crosses no light-blocking cell.
+  float gridShadow(vec2 a, vec2 b) {
+    vec2 d = b - a;
+    float len = length(d);
+    if (len < 1e-3) return 1.0;
+    vec2 dir = d / len;
+    ivec2 c = ivec2(floor(a)), cb = ivec2(floor(b));
+    ivec2 st = ivec2(dir.x < 0.0 ? -1 : 1, dir.y < 0.0 ? -1 : 1);
+    vec2 inv = vec2(abs(dir.x) < 1e-5 ? 1e5 : 1.0 / abs(dir.x), abs(dir.y) < 1e-5 ? 1e5 : 1.0 / abs(dir.y));
+    vec2 fr = a - vec2(c);
+    vec2 tMax = vec2(dir.x < 0.0 ? fr.x : 1.0 - fr.x, dir.y < 0.0 ? fr.y : 1.0 - fr.y) * inv;
+    ivec2 ms = ivec2(uMapSize) - 1;
+    for (int i = 0; i < 24; i++) {
+      if (c == cb) return 1.0;
+      if (tMax.x < tMax.y) { if (tMax.x > len) return 1.0; tMax.x += inv.x; c.x += st.x; }
+      else { if (tMax.y > len) return 1.0; tMax.y += inv.y; c.y += st.y; }
+      if (c.x < 0 || c.y < 0 || c.x > ms.x || c.y > ms.y) return 0.0;
+      if (texelFetch(uCells, c, 0).r > 0.5) return 0.0;
+    }
+    return 1.0;
+  }
+
+  // Blinn-Phong lobe, roughly energy-normalized.
+  float lobe(vec3 N, vec3 L, vec3 V, float shin) {
+    vec3 H = normalize(L + V);
+    return pow(max(dot(N, H), 0.0), shin) * (shin + 8.0) / 50.0;
+  }
+
+  // alb: linear albedo, N: shading normal, P: world position, lp: where to read the lightmap,
+  // gloss/spec: material, wrap: 0 for surfaces, 1 for flat billboards (half-Lambert).
+  vec3 shade(vec3 alb, vec3 N, vec3 P, vec2 lp, float gloss, float spec, float wrap) {
+    vec3 V = normalize(uEye - P);
+    vec4 la = texture(uLightA, lp / uMapSize);
+    vec4 lb = texture(uLightB, lp / uMapSize);
+    float ao = la.a;
+    vec3 amb = uAmbient * ao * (0.82 + 0.18 * N.z);
+    vec3 Lv = vec3(lb.xy, lb.z - P.z);
+    float ll = length(Lv);
+    Lv = ll > 1e-3 ? Lv / ll : vec3(0.0, 0.0, 1.0);
+    float ndl = dot(N, Lv);
+    ndl = mix(max(ndl, 0.0), ndl * 0.5 + 0.5, wrap);
+    vec3 dir = la.rgb * mix(1.0, ao, 0.5);
+    float shin = mix(8.0, 110.0, gloss);
+    vec3 c = alb * (amb + dir * (0.3 + 1.05 * ndl)) + dir * spec * lobe(N, Lv, V, shin) * max(ndl, 0.0);
+    for (int i = 0; i < ${MAX_DL}; i++) {
+      if (i >= uDN) break;
+      vec3 d = uDL[i].xyz - P;
+      float r = uDL[i].w, dd = dot(d, d);
+      if (dd > r * r) continue;
+      vec3 l = d * inversesqrt(max(dd, 1e-4));
+      float nl = dot(N, l);
+      nl = mix(max(nl, 0.0), nl * 0.5 + 0.5, wrap);
+      if (nl <= 0.0) continue;
+      float f = 1.0 - dd / (r * r);
+      float sh = gridShadow(P.xy + N.xy * 0.03, uDL[i].xy);
+      if (sh <= 0.0) continue;
+      c += uDC[i].rgb * (f * f * sh * nl) * (alb + spec * lobe(N, l, V, shin));
+    }
+    return c;
+  }
+
+  vec3 fogged(vec3 c, vec3 P) {
+    float d = length(P - uEye);
+    float f = min(0.8, 1.0 - exp(-d * 0.07));
+    return mix(c, uFog, f);
+  }
+
+  // ACES filmic curve (Narkowicz fit) and sRGB encoding.
+  vec3 tonemap(vec3 c) {
+    c *= uExposure;
+    c = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);
+    return pow(c, vec3(1.0 / 2.2));
+  }
   `;
 
   const WORLD_FS = `#version 300 es
   precision highp float;
   precision highp sampler2DArray;
-  in vec3 vPos; in vec2 vUv; in vec3 vNrm;
+  in vec3 vPos; in vec2 vUv; in vec3 vNrm; in vec3 vTan;
   flat in float vLayer; flat in float vKind;
-  uniform sampler2DArray uTex;
-  uniform vec3 uFwd;
-  ${COMMON_FS}
+  uniform sampler2DArray uTex, uNrm;
+  uniform sampler2D uRefl;
+  uniform float uReflOn;
+  uniform vec2 uViewport;
+  ${LIGHTING}
   out vec4 oColor;
   void main() {
-    vec4 t = texture(uTex, vec3(vUv, vLayer));
-    // emissive texels (LEDs, screens, light panels) are stored in alpha
-    if (t.a > 0.5) { oColor = vec4(toSrgb(t.rgb), 1.0); return; }
-    vec2 lp = vPos.xy + vNrm.xy * (0.5 / 4.0);
-    float d = dot(vPos - uEye, uFwd);
-    float s = falloff(d);
-    if (vKind == 0.0 || vKind == 3.0) {
-      if (abs(vNrm.y) > 0.5) s *= 0.8;
-      float v = clamp(1.0 - vPos.z, 0.0, 1.0);
-      s *= min(1.0, 0.82 + v * 1.8) * (v > 0.82 ? 1.0 - (v - 0.82) * 2.2 : 1.0);
+    vec3 uvl = vec3(vUv, vLayer);
+    vec4 t = texture(uTex, uvl);
+    vec4 nm = texture(uNrm, uvl);
+    vec3 Ng = normalize(vNrm), T = normalize(vTan);
+    vec3 B = vKind == 1.0 || vKind == 2.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, -1.0);
+    vec2 nxy = nm.rg * 2.0 - 1.0;
+    vec3 N = normalize(T * nxy.x + B * nxy.y + Ng * sqrt(max(0.0, 1.0 - dot(nxy, nxy))));
+    float gloss = nm.b, spec = nm.a;
+    vec2 lp = vPos.xy + Ng.xy * (0.5 / ${LG2}.0);
+    vec3 c = shade(t.rgb, N, vPos, lp, gloss, spec, 0.0);
+    // floor: mirrored scene, blurred by roughness, Fresnel weighted
+    if (vKind == 1.0 && uReflOn > 0.5) {
+      vec3 V = normalize(uEye - vPos);
+      vec2 suv = gl_FragCoord.xy / uViewport + nxy * 0.025;
+      vec3 r = textureLod(uRefl, suv, (1.0 - gloss) * 4.0).rgb;
+      float fr = 0.03 + 0.97 * pow(1.0 - max(V.z, 0.0), 5.0);
+      float k = clamp((fr * 0.9 + 0.07) * gloss * 1.4, 0.0, 0.75);
+      c = c * (1.0 - k * 0.5) + r * k;
     }
-    vec3 c = toSrgb(t.rgb) * lightmap(lp) * s + uFog * fogAmt(d);
-    oColor = vec4(min(c, 1.0), 1.0);
+    // emissive texels (LEDs, screens, light panels) are stored in alpha
+    c = mix(c, t.rgb * uEmissive, t.a);
+    c = fogged(c, vPos);
+    oColor = vec4(uMirror < 0.0 ? c : tonemap(c), 1.0);
   }`;
 
   const SPRITE_VS = `#version 300 es
@@ -95,13 +199,14 @@ const GLR = (() => {
   uniform mat4 uVP;
   uniform vec2 uRight;
   uniform vec2 uJitter;
+  uniform float uMirror;
   out vec2 vUv; out vec3 vPos;
   flat out float vLayer; flat out float vFlags; flat out vec2 vFeet;
   void main() {
     vec3 p = vec3(iPos.xy + uRight * (aQuad.x - 0.5) * iPos.w, iPos.z + (1.0 - aQuad.y) * iPos.w);
     vUv = aQuad * iTex.yz;
     vPos = p; vLayer = iTex.x; vFlags = iTex.w; vFeet = iPos.xy;
-    gl_Position = uVP * vec4(p, 1.0);
+    gl_Position = uVP * vec4(p.xy, p.z * uMirror, 1.0);
     gl_Position.xy += uJitter * gl_Position.w;
   }`;
 
@@ -112,26 +217,29 @@ const GLR = (() => {
   flat in float vLayer; flat in float vFlags; flat in vec2 vFeet;
   uniform sampler2DArray uTex;
   uniform vec3 uFwd;
-  ${COMMON_FS}
+  ${LIGHTING}
   out vec4 oColor;
   void main() {
+    if (uMirror < 0.0 && vPos.z < 0.0) discard;
     vec4 t = texture(uTex, vec3(vUv, vLayer));
     if (t.a < 0.03) discard;
-    vec3 c = toSrgb(t.rgb);
     int fl = int(vFlags + 0.5);
-    if ((fl & 1) != 0) c = mix(c, vec3(1.0), 0.5);
-    else if ((fl & 2) == 0) {
-      float d = dot(vPos - uEye, uFwd);
-      c = c * lightmap(vFeet) * falloff(d) + uFog * fogAmt(d);
+    vec3 c;
+    if ((fl & 2) != 0) c = t.rgb * uEmissive;
+    else {
+      vec3 N = normalize(vec3(-uFwd.xy, 0.0));
+      c = shade(t.rgb, N, vPos, vFeet, 0.35, 0.25, 1.0);
+      if ((fl & 1) != 0) c = mix(c, vec3(1.6), 0.5);
+      c = fogged(c, vPos);
     }
-    oColor = vec4(min(c, 1.0), t.a);
+    oColor = vec4(uMirror < 0.0 ? c : tonemap(c), t.a);
   }`;
 
   function compile(vs, fs) {
     const mk = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src); gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + '\n' + src);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
       return s;
     };
     const p = gl.createProgram();
@@ -172,8 +280,8 @@ const GLR = (() => {
     return out;
   }
 
-  // Spreads the colors of opaque texels into the transparent ones around them, so that
-  // bilinear filtering doesn't pull black into the edges.
+  // Spreads the colors of opaque texels into the transparent ones around them, so
+  // that bilinear filtering doesn't pull black into the edges.
   function dilate(rgba, w, h, passes) {
     for (let p = 0; p < passes; p++) {
       const src = rgba.slice();
@@ -205,22 +313,62 @@ const GLR = (() => {
     return t;
   }
 
+  // Surface response per wall tile: [bump strength, gloss, specular].
+  const MATERIALS = {
+    concrete: [1.1, 0.16, 0.12], rack: [2.6, 0.62, 0.55], door: [2.2, 0.5, 0.5], crac: [2.2, 0.5, 0.45],
+    warn: [1.4, 0.3, 0.2], exit: [1.8, 0.4, 0.3], floor: [1.2, 0.78, 0.6], perf: [2.2, 0.66, 0.55], ceil: [1.2, 0.22, 0.12],
+  };
+  const TILE_MAT = { '#': 'concrete', '?': 'concrete', W: 'warn', R: 'rack', S: 'rack', N: 'rack', C: 'crac', D: 'door', 1: 'door', 2: 'door', X: 'exit' };
+
+  // Normal (rg), gloss (b) and specular (a) maps, from the texture's luminance as a height field.
+  function normalMap(t, mat) {
+    const N = TS, px = t.px, em = t.em, [S, gl0, sp0] = MATERIALS[mat];
+    const lum = new Float32Array(N * N), h = new Float32Array(N * N);
+    for (let i = 0; i < N * N; i++) { const c = px[i]; lum[i] = ((c & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + ((c >> 16) & 255) * 0.11) / 255; }
+    const at = (a, x, y) => a[((y + N) % N) * N + ((x + N) % N)];
+    const blur = (src, dst) => {
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        dst[y * N + x] = (at(src, x, y) * 4 + at(src, x - 1, y) + at(src, x + 1, y) + at(src, x, y - 1) + at(src, x, y + 1)) / 8;
+      }
+    };
+    const tmp = new Float32Array(N * N);
+    blur(lum, tmp); blur(tmp, h);
+    const out = new Uint8Array(N * N * 4);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const i = y * N + x, o = i * 4;
+      if (em[i]) { out[o] = 128; out[o + 1] = 128; out[o + 2] = 230; out[o + 3] = 150; continue; }
+      const gx = (at(h, x + 1, y - 1) + 2 * at(h, x + 1, y) + at(h, x + 1, y + 1)) - (at(h, x - 1, y - 1) + 2 * at(h, x - 1, y) + at(h, x - 1, y + 1));
+      const gy = (at(h, x - 1, y + 1) + 2 * at(h, x, y + 1) + at(h, x + 1, y + 1)) - (at(h, x - 1, y - 1) + 2 * at(h, x, y - 1) + at(h, x + 1, y - 1));
+      let nx = -gx * S, ny = -gy * S;
+      const l = Math.hypot(nx, ny, 1);
+      nx /= l; ny /= l;
+      const v = lum[i];
+      out[o] = Math.round((nx * 0.5 + 0.5) * 255);
+      out[o + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      out[o + 2] = Math.round(Math.min(1, gl0 * (0.7 + 0.6 * v)) * 255);
+      out[o + 3] = Math.round(Math.min(1, sp0 * (0.5 + v)) * 255);
+    }
+    return out;
+  }
+
   // Walls, flats: every texture of Assets gets a layer; the frames of an animated
   // variant are consecutive. Alpha holds the emissive mask.
-  let wallLayers = [];
   function buildWallArray() {
     const list = [];
-    const reg = (t) => { if (t.glLayer === undefined) { t.glLayer = list.length; list.push(t); } };
-    for (const ch of Object.keys(Assets.walls)) for (const v of Assets.walls[ch]) v.forEach(reg);
-    for (const ep of Assets.concrete) for (const v of ep) v.forEach(reg);
-    Assets.floor.forEach(reg); Assets.ceil.forEach(reg);
-    wallLayers = list;
+    const reg = (t, mat) => { if (t.glLayer === undefined) { t.glLayer = list.length; list.push([t, mat]); } };
+    for (const ch of Object.keys(Assets.walls)) for (const v of Assets.walls[ch]) v.forEach((t) => reg(t, TILE_MAT[ch] || 'rack'));
+    for (const ep of Assets.concrete) for (const v of ep) v.forEach((t) => reg(t, 'concrete'));
+    reg(Assets.floor[0], 'floor'); reg(Assets.floor[1], 'perf');
+    Assets.ceil.forEach((t) => reg(t, 'ceil'));
     texWalls = newArray(list.length, gl.SRGB8_ALPHA8);
-    list.forEach((t, i) => {
+    list.forEach(([t], i) => {
       const rgba = new Uint8Array(t.px.buffer.slice(0));
       for (let k = 0; k < t.em.length; k++) rgba[k * 4 + 3] = t.em[k] ? 255 : 0;
       gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     });
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    texNrm = newArray(list.length, gl.RGBA8);
+    list.forEach(([t, mat], i) => gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, normalMap(t, mat)));
     gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
   }
 
@@ -244,9 +392,128 @@ const GLR = (() => {
     return l;
   }
 
+  function tex2D(t, filter, wrap) {
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter === gl.LINEAR_MIPMAP_LINEAR ? gl.LINEAR : filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  }
+
+  /* ----------------------------------------------------------- lightmap */
+  // Directional lightmap of a level (see the header): two RGBA float textures.
+  function bake(L) {
+    const lw = L.w * LG2, lh = L.h * LG2, n = lw * lh;
+    const mood = LIGHT_MOODS[L.def.episode % LIGHT_MOODS.length];
+    const R = new Float32Array(n), G = new Float32Array(n), B = new Float32Array(n);
+    const DX = new Float32Array(n), DY = new Float32Array(n), DZ = new Float32Array(n), DW = new Float32Array(n);
+    const solid = (cx, cy) => Light._solid(L, cx, cy);
+    const SOFT = [[-0.22, -0.22], [0.22, -0.22], [-0.22, 0.22], [0.22, 0.22]];
+    function point(x, y, z, rad, cr, cg, cb, k, soft) {
+      const sx0 = Math.max(0, Math.floor((x - rad) * LG2)), sx1 = Math.min(lw - 1, Math.ceil((x + rad) * LG2));
+      const sy0 = Math.max(0, Math.floor((y - rad) * LG2)), sy1 = Math.min(lh - 1, Math.ceil((y + rad) * LG2));
+      const r2 = rad * rad, lum = cr + cg + cb;
+      for (let sy = sy0; sy <= sy1; sy++) {
+        const py = (sy + 0.5) / LG2;
+        for (let sx = sx0; sx <= sx1; sx++) {
+          const px = (sx + 0.5) / LG2;
+          const d2 = (px - x) * (px - x) + (py - y) * (py - y);
+          if (d2 >= r2 || solid(px | 0, py | 0)) continue;
+          let vis = 0;
+          if (soft) { for (const [ox, oy] of SOFT) if (Light._los(L, x + ox, y + oy, px, py)) vis += 0.25; }
+          else vis = Light._los(L, x, y, px, py) ? 1 : 0;
+          if (!vis) continue;
+          const f = 1 - d2 / r2, a = f * f * k * vis, i = sy * lw + sx, wgt = a * lum;
+          R[i] += cr * a; G[i] += cg * a; B[i] += cb * a;
+          DX[i] += (x - px) * wgt; DY[i] += (y - py) * wgt; DZ[i] += z * wgt; DW[i] += wgt;
+        }
+      }
+    }
+    for (let y = 0; y < L.h; y++) for (let x = 0; x < L.w; x++) {
+      const i = y * L.w + x;
+      if (L.map[i]) continue;
+      if (L.ceil[i] === 1) point(x + 0.5, y + 0.5, 0.97, 3.6, mood.lamp[0], mood.lamp[1], mood.lamp[2], 1.0, true);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const t = L.map[(y + dy) * L.w + x + dx];
+        const gl0 = t && WALL_GLOW[String.fromCharCode(t)];
+        if (gl0) point(x + 0.5 + dx * 0.3, y + 0.5 + dy * 0.3, 0.6, 2.1, gl0[0], gl0[1], gl0[2], gl0[3] * 1.2, false);
+      }
+    }
+    const A = new Float32Array(n * 4), Bd = new Float32Array(n * 4);
+    for (let sy = 0; sy < lh; sy++) for (let sx = 0; sx < lw; sx++) {
+      const px = (sx + 0.5) / LG2, py = (sy + 0.5) / LG2, cx = px | 0, cy = py | 0, i = sy * lw + sx;
+      // ambient occlusion: darker close to solid neighbors
+      let ao = 1;
+      if (solid(cx, cy)) ao = 0.5;
+      else {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if ((!dx && !dy) || !solid(cx + dx, cy + dy)) continue;
+          const ex = dx < 0 ? px - cx : dx > 0 ? cx + 1 - px : 0;
+          const ey = dy < 0 ? py - cy : dy > 0 ? cy + 1 - py : 0;
+          const a = 0.55 + 0.45 * Math.min(1, Math.hypot(ex, ey) / 0.6);
+          if (a < ao) ao = a;
+        }
+      }
+      A[i * 4] = R[i]; A[i * 4 + 1] = G[i]; A[i * 4 + 2] = B[i]; A[i * 4 + 3] = ao;
+      const w = DW[i];
+      if (w > 1e-5) { Bd[i * 4] = DX[i] / w; Bd[i * 4 + 1] = DY[i] / w; Bd[i * 4 + 2] = DZ[i] / w; } else Bd[i * 4 + 2] = 1;
+    }
+    const up = (t, data) => {
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, lw, lh, 0, gl.RGBA, gl.FLOAT, data);
+      tex2D(t, gl.LINEAR, gl.CLAMP_TO_EDGE);
+    };
+    up(texLightA, A); up(texLightB, Bd);
+    ambient = mood.amb.map((v) => v * L.def.ambient * 0.42);
+  }
+  let ambient = [0.3, 0.3, 0.3];
+
+  // Map cells for the shader: r = blocks light. Doors change it as they move.
+  let cellData = null, cellSig = '';
+  function updateCells(L, force) {
+    let sig = '';
+    for (const d of L.doorList) sig += d.open < 0.5 ? '1' : '0';
+    if (!force && sig === cellSig) return;
+    cellSig = sig;
+    if (force || !cellData || cellData.length !== L.w * L.h * 4) cellData = new Uint8Array(L.w * L.h * 4);
+    for (let i = 0; i < L.w * L.h; i++) {
+      const d = L.doors[i];
+      cellData[i * 4] = L.map[i] && (!d || d.open < 0.5) ? 255 : 0;
+      cellData[i * 4 + 1] = L.ceil[i];
+      cellData[i * 4 + 2] = L.floor[i];
+    }
+    gl.bindTexture(gl.TEXTURE_2D, texCells);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, L.w, L.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, cellData);
+    tex2D(texCells, gl.NEAREST, gl.CLAMP_TO_EDGE);
+  }
+
+  // The frame's dynamic lights (same sources as the software renderer).
+  const DL = new Float32Array(MAX_DL * 4), DC = new Float32Array(MAX_DL * 4);
+  let dlN = 0;
+  function gatherLights(L, P, inv) {
+    dlN = 0;
+    if (!Light.high) return;
+    const push = (x, y, z, rad, r, g, b, k) => {
+      if (dlN >= MAX_DL || k <= 0) return;
+      DL.set([x, y, z, rad], dlN * 4); DC.set([r * k, g * k, b * k, 0], dlN * 4); dlN++;
+    };
+    if (P.flashT > 0 && !P.dead) {
+      const c = inv && inv.cur === 7 ? [0.4, 0.8, 1.0] : inv && inv.cur === 6 ? [0.7, 0.6, 1.0] : [1.0, 0.72, 0.4];
+      push(P.x + Math.cos(P.a) * 0.5, P.y + Math.sin(P.a) * 0.5, 0.45, 5.5, c[0], c[1], c[2], 2.2);
+    }
+    for (const b of L.barrels) if (!b.dead && b.fuse >= 0) push(b.x, b.y, 0.5, 2.6, 1.0, 0.15, 0.1, 1.4 + Math.sin(performance.now() / 50));
+    for (const f of L.fx) {
+      const d = FX_LIGHT[f.kind];
+      if (d) push(f.x, f.y, Math.max(0.15, f.z), d[4], d[0], d[1], d[2], d[3] * 2.2 * (1 - f.t / f.dur));
+    }
+    for (const p of L.proj) {
+      const d = PROJ_LIGHT[p.kind];
+      if (d) push(p.x, p.y, p.z + (p.scale || 0.35) / 2, d[4], d[0], d[1], d[2], d[3] * 1.8);
+    }
+  }
+
   /* ----------------------------------------------------------- geometry */
   const solidAt = (L, x, y) => x < 0 || y < 0 || x >= L.w || y >= L.h || (L.map[y * L.w + x] !== 0 && !L.doors[y * L.w + x]);
-  const isDoorCell = (L, x, y) => x >= 0 && y >= 0 && x < L.w && y < L.h && !!L.doors[y * L.w + x];
 
   function wallFrames(L, i) {
     const ch = String.fromCharCode(L.map[i]);
@@ -254,14 +521,14 @@ const GLR = (() => {
     return vars[L.variant[i] % vars.length];
   }
 
-  // A quad: corners p0..p3 (counter-clockwise), uvs, normal, tangent, texture info.
+  // A quad: corners p0..p3, uvs, normal, tangent (direction of growing u), texture info.
   function pushQuad(V, I, p, uv, n, t, tex) {
     const base = V.length / VSTRIDE;
     for (let k = 0; k < 4; k++) V.push(p[k][0], p[k][1], p[k][2], uv[k][0], uv[k][1], n[0], n[1], n[2], t[0], t[1], t[2], tex[0], tex[1], tex[2], tex[3]);
     I.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
 
-  // A vertical face along a cell edge, from (ax, ay) to (bx, by), u running from a to b, v from top to bottom.
+  // A vertical face from (ax, ay) to (bx, by), u running from a to b, v from top to bottom.
   function pushWall(V, I, ax, ay, bx, by, u0, u1, n, tex) {
     const t = [bx - ax, by - ay, 0], l = Math.hypot(t[0], t[1]) || 1;
     pushQuad(V, I, [[ax, ay, 1], [bx, by, 1], [bx, by, 0], [ax, ay, 0]], [[u0, 0], [u1, 0], [u1, 1], [u0, 1]], n, [t[0] / l, t[1] / l, 0], tex);
@@ -284,29 +551,28 @@ const GLR = (() => {
     return { vao, vb, ib };
   }
 
+  // Static world: floors first (left out of the mirrored pass), then ceilings and walls.
   function buildWorld(L) {
     for (const b of worldBufs) gl.deleteBuffer(b);
     if (worldVAO) gl.deleteVertexArray(worldVAO);
-    const V = [], I = [], w = L.w, h = L.h;
+    const V = [], IF = [], I = [], w = L.w, h = L.h;
+    const uv = [[0, 0], [1, 0], [1, 1], [0, 1]];
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (!L.map[i] || L.doors[i]) {
-        // floor and ceiling
         const fl = Assets.floor[L.floor[i]].glLayer, ce = Assets.ceil[L.ceil[i]].glLayer;
-        const uv = [[0, 0], [1, 0], [1, 1], [0, 1]];
-        pushQuad(V, I, [[x, y, 0], [x + 1, y, 0], [x + 1, y + 1, 0], [x, y + 1, 0]], uv, [0, 0, 1], [1, 0, 0], [fl, 1, 0, KIND_FLOOR]);
+        pushQuad(V, IF, [[x, y, 0], [x + 1, y, 0], [x + 1, y + 1, 0], [x, y + 1, 0]], uv, [0, 0, 1], [1, 0, 0], [fl, 1, 0, KIND_FLOOR]);
         pushQuad(V, I, [[x, y, 1], [x + 1, y, 1], [x + 1, y + 1, 1], [x, y + 1, 1]], uv, [0, 0, -1], [1, 0, 0], [ce, 1, 0, KIND_CEIL]);
         continue;
       }
       const fr = wallFrames(L, i), tex = [fr[0].glLayer, fr.length, L.variant[i], KIND_WALL];
-      const open = (xx, yy) => !solidAt(L, xx, yy) || isDoorCell(L, xx, yy);
-      if (open(x + 1, y)) pushWall(V, I, x + 1, y + 1, x + 1, y, 0, 1, [1, 0, 0], tex);
-      if (open(x - 1, y)) pushWall(V, I, x, y, x, y + 1, 0, 1, [-1, 0, 0], tex);
-      if (open(x, y + 1)) pushWall(V, I, x, y + 1, x + 1, y + 1, 0, 1, [0, 1, 0], tex);
-      if (open(x, y - 1)) pushWall(V, I, x + 1, y, x, y, 0, 1, [0, -1, 0], tex);
+      if (!solidAt(L, x + 1, y)) pushWall(V, I, x + 1, y + 1, x + 1, y, 0, 1, [1, 0, 0], tex);
+      if (!solidAt(L, x - 1, y)) pushWall(V, I, x, y, x, y + 1, 0, 1, [-1, 0, 0], tex);
+      if (!solidAt(L, x, y + 1)) pushWall(V, I, x, y + 1, x + 1, y + 1, 0, 1, [0, 1, 0], tex);
+      if (!solidAt(L, x, y - 1)) pushWall(V, I, x + 1, y, x, y, 0, 1, [0, -1, 0], tex);
     }
-    const m = makeVAO(new Float32Array(V), new Uint32Array(I), false);
-    worldVAO = m.vao; worldBufs = [m.vb, m.ib]; worldCount = I.length;
+    const m = makeVAO(new Float32Array(V), new Uint32Array(IF.concat(I)), false);
+    worldVAO = m.vao; worldBufs = [m.vb, m.ib]; worldCount = IF.length + I.length; floorCount = IF.length;
   }
 
   // Doors slide sideways into the wall; secret walls slide back, away from the player.
@@ -325,10 +591,11 @@ const GLR = (() => {
         }
         if (o <= 0) d.glPush = null;
         const px = x + (d.glPush ? d.glPush[0] * o : 0), py = y + (d.glPush ? d.glPush[1] * o : 0);
-        pushWall(doorV, doorI, px + 1, py + 1, px + 1, py, 0, 1, [1, 0, 0], tex);
-        pushWall(doorV, doorI, px, py, px, py + 1, 0, 1, [-1, 0, 0], tex);
-        pushWall(doorV, doorI, px, py + 1, px + 1, py + 1, 0, 1, [0, 1, 0], tex);
-        pushWall(doorV, doorI, px + 1, py, px, py, 0, 1, [0, -1, 0], tex);
+        const tw = [tex[0], tex[1], tex[2], KIND_WALL];
+        pushWall(doorV, doorI, px + 1, py + 1, px + 1, py, 0, 1, [1, 0, 0], tw);
+        pushWall(doorV, doorI, px, py, px, py + 1, 0, 1, [-1, 0, 0], tw);
+        pushWall(doorV, doorI, px, py + 1, px + 1, py + 1, 0, 1, [0, 1, 0], tw);
+        pushWall(doorV, doorI, px + 1, py, px, py, 0, 1, [0, -1, 0], tw);
         continue;
       }
       if (o >= 1) continue;
@@ -355,20 +622,11 @@ const GLR = (() => {
     gl.bindVertexArray(null);
   }
 
-  function uploadLight() {
-    if (!texLight) texLight = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texLight);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, Light.w, Light.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(Light.base.buffer.slice(0)));
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  }
-
   function setLevel(L) {
     curL = L;
     buildWorld(L);
-    uploadLight();
+    bake(L);
+    updateCells(L, true);
   }
 
   /* -------------------------------------------------------------- camera */
@@ -383,7 +641,6 @@ const GLR = (() => {
     const dot = (v) => v[0] * e[0] + v[1] * e[1] + v[2] * e[2];
     const sx = 1 / TAN_H, sy = 1 / (TAN_H * (bh / bw));
     const A = (FAR + NEAR) / (FAR - NEAR), B = -2 * FAR * NEAR / (FAR - NEAR);
-    // rows of P * V
     const row = [
       [r[0] * sx, r[1] * sx, r[2] * sx, -dot(r) * sx],
       [u[0] * sy, u[1] * sy, u[2] * sy, -dot(u) * sy],
@@ -403,8 +660,6 @@ const GLR = (() => {
   function addSprite(x, y, spr, size, z, flash, bright) {
     if (sprN >= SPR_MAX || !spr) return;
     const dx = x - cam.e[0], dy = y - cam.e[1];
-    const depth = dx * cam.f[0] + dy * cam.f[1];
-    if (depth < -size) return;
     const o = sprN * SPR_F;
     sprData[o] = x; sprData[o + 1] = y; sprData[o + 2] = z; sprData[o + 3] = size;
     sprData[o + 4] = spriteLayer(spr); sprData[o + 5] = spr.w / TS; sprData[o + 6] = spr.h / TS;
@@ -414,20 +669,57 @@ const GLR = (() => {
   }
 
   /* --------------------------------------------------------------- frame */
-  function setCommon(pr, L) {
+  let frameJitter = [0, 0], exposure = 1;
+  function setCommon(pr, L, mirror) {
     const u = pr.u;
     gl.uniformMatrix4fv(u.uVP, false, VP);
-    gl.uniform2f(u.uJitter, frameJitter[0], frameJitter[1]);
-    gl.uniform3f(u.uEye, cam.e[0], cam.e[1], cam.e[2]);
+    gl.uniform2f(u.uJitter, mirror ? 0 : frameJitter[0], mirror ? 0 : frameJitter[1]);
+    gl.uniform1f(u.uMirror, mirror ? -1 : 1);
+    gl.uniform3f(u.uEye, cam.e[0], cam.e[1], mirror ? -cam.e[2] : cam.e[2]);
     gl.uniform3f(u.uFwd, cam.f[0], cam.f[1], cam.f[2]);
     gl.uniform2f(u.uMapSize, L.w, L.h);
-    gl.uniform3f(u.uFog, Light.fog[0] / 255, Light.fog[1] / 255, Light.fog[2] / 255);
-    gl.uniform1f(u.uAmb, frameAmb);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texLight); gl.uniform1i(u.uLight, 1);
+    const f = Light.fog;
+    gl.uniform3f(u.uFog, (f[0] / 255) ** 2.2 * 1.6, (f[1] / 255) ** 2.2 * 1.6, (f[2] / 255) ** 2.2 * 1.6);
+    gl.uniform3f(u.uAmbient, ambient[0], ambient[1], ambient[2]);
+    gl.uniform1f(u.uEmissive, 2.0);
+    gl.uniform1f(u.uExposure, exposure);
+    gl.uniform1i(u.uDN, dlN);
+    if (dlN) { gl.uniform4fv(u.uDL, DL); gl.uniform4fv(u.uDC, DC); }
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texLightA); gl.uniform1i(u.uLightA, 2);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texLightB); gl.uniform1i(u.uLightB, 3);
+    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, texCells); gl.uniform1i(u.uCells, 4);
   }
-  let frameJitter = [0, 0], frameAmb = 1;
 
-  // f: {L, P, anim, collect(add), shakeX, shakeY (in fractions of the view)}
+  function drawWorld(L, anim, mirror) {
+    gl.useProgram(progWorld.p);
+    setCommon(progWorld, L, mirror);
+    const u = progWorld.u;
+    gl.uniform1f(u.uAnim, anim);
+    gl.uniform2f(u.uViewport, bw, bh);
+    gl.uniform1f(u.uReflOn, !mirror && reflOn ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls); gl.uniform1i(u.uTex, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm); gl.uniform1i(u.uNrm, 1);
+    gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, !mirror && reflOn ? reflTex : texBlack); gl.uniform1i(u.uRefl, 5);
+    gl.bindVertexArray(worldVAO);
+    if (mirror) gl.drawElements(gl.TRIANGLES, worldCount - floorCount, gl.UNSIGNED_INT, floorCount * 4);
+    else gl.drawElements(gl.TRIANGLES, worldCount, gl.UNSIGNED_INT, 0);
+    if (doorCount) { gl.bindVertexArray(doorVAO); gl.drawElements(gl.TRIANGLES, doorCount, gl.UNSIGNED_INT, 0); }
+  }
+
+  function drawSprites(L, mirror) {
+    if (!sprN) return;
+    gl.useProgram(progSprite.p);
+    setCommon(progSprite, L, mirror);
+    gl.uniform2f(progSprite.u.uRight, cam.r[0], cam.r[1]);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texSprites); gl.uniform1i(progSprite.u.uTex, 0);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(spriteVAO);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, sprN);
+    gl.disable(gl.BLEND);
+  }
+
+  let reflOn = false;
+  // f: {L, P, inv, anim, collect(add), shakeX, shakeY (fractions of the view)}
   function render(f) {
     const L = f.L, P = f.P;
     if (L !== curL) setLevel(L);
@@ -435,43 +727,43 @@ const GLR = (() => {
     const bob = Math.sin(P.bobPhase * 2) * 0.012 * P.bobAmt;
     camera(P.x, P.y, 0.5 + bob, P.a, P.pitch || 0);
     frameJitter = [f.shakeX * 2, -f.shakeY * 2];
-    frameAmb = 0.62 + L.def.ambient * 0.38 + (P.flashT > 0 ? 0.12 : 0);
+    exposure = 0.9 + (P.flashT > 0 ? 0.08 : 0);
     buildDoors(L, P);
+    updateCells(L, false);
+    gatherLights(L, P, f.inv);
     sprN = 0;
     f.collect(addSprite);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, bw, bh);
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true);
-    gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
-
-    gl.useProgram(progWorld.p);
-    setCommon(progWorld, L);
-    gl.uniform1f(progWorld.u.uAnim, f.anim);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls); gl.uniform1i(progWorld.u.uTex, 0);
-    gl.bindVertexArray(worldVAO);
-    gl.drawElements(gl.TRIANGLES, worldCount, gl.UNSIGNED_INT, 0);
-    if (doorCount) { gl.bindVertexArray(doorVAO); gl.drawElements(gl.TRIANGLES, doorCount, gl.UNSIGNED_INT, 0); }
-
     if (sprN) {
       // back to front, alpha blended over the world
       sprOrder.length = sprN;
       for (let i = 0; i < sprN; i++) sprOrder[i] = i;
       sprOrder.sort((a, b) => sprDepth[b] - sprDepth[a]);
       for (let k = 0; k < sprN; k++) sprSort.set(sprData.subarray(sprOrder[k] * SPR_F, sprOrder[k] * SPR_F + SPR_F), k * SPR_F);
-      gl.useProgram(progSprite.p);
-      setCommon(progSprite, L);
-      gl.uniform2f(progSprite.u.uRight, cam.r[0], cam.r[1]);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texSprites); gl.uniform1i(progSprite.u.uTex, 0);
-      gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.bindVertexArray(spriteVAO);
       gl.bindBuffer(gl.ARRAY_BUFFER, spriteInst);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, sprSort.subarray(0, sprN * SPR_F));
-      gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, sprN);
-      gl.disable(gl.BLEND);
     }
+
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true);
+    gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 1);
+
+    reflOn = Light.high;
+    if (reflOn) {
+      // the scene mirrored under the floor, sampled by the floor shader
+      gl.bindFramebuffer(gl.FRAMEBUFFER, reflFBO);
+      gl.viewport(0, 0, rw, rh);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      drawWorld(L, f.anim, true);
+      drawSprites(L, true);
+      gl.bindTexture(gl.TEXTURE_2D, reflTex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, bw, bh);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    drawWorld(L, f.anim, false);
+    drawSprites(L, false);
     gl.bindVertexArray(null);
   }
 
@@ -481,8 +773,24 @@ const GLR = (() => {
     if (w === bw && h === bh && cv.width === w) return;
     bw = w; bh = h;
     cv.width = w; cv.height = h;
+    // reflection target at half resolution, with mipmaps for glossy blur
+    rw = Math.max(1, w >> 1); rh = Math.max(1, h >> 1);
+    if (reflTex) { gl.deleteTexture(reflTex); gl.deleteRenderbuffer(reflDepth); gl.deleteFramebuffer(reflFBO); }
+    reflTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, reflTex);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(rw, rh))) + 1, floatOK ? gl.RGBA16F : gl.RGBA8, rw, rh);
+    tex2D(reflTex, gl.LINEAR_MIPMAP_LINEAR, gl.CLAMP_TO_EDGE);
+    reflDepth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, reflDepth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, rw, rh);
+    reflFBO = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, reflFBO);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, reflTex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, reflDepth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
+  let userScale = 1, lay = null;
   // Places the GL canvas over the 3D part of the view (CSS pixels).
   function layout(left, top, w, h, ratio) {
     if (!cv) return;
@@ -493,7 +801,7 @@ const GLR = (() => {
     const px = cssW * cssH * dpr * dpr;
     scale = Math.min(1, Math.sqrt(2.6e6 / px)) * userScale;
   }
-  let userScale = 1, lay = null;
+
   // Lowers the resolution one step on a slow GPU; false once at the minimum.
   function degrade() {
     if (userScale <= 0.55) return false;
@@ -509,12 +817,18 @@ const GLR = (() => {
       gl = cv.getContext('webgl2', { antialias: true, alpha: false, depth: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
       if (!gl) return false;
       aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+      floatOK = !!gl.getExtension('EXT_color_buffer_float');
       progWorld = compile(WORLD_VS, WORLD_FS);
       progSprite = compile(SPRITE_VS, SPRITE_FS);
       buildWallArray();
       texSprites = newArray(SPR_CAP, gl.SRGB8_ALPHA8);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      texLightA = gl.createTexture(); texLightB = gl.createTexture(); texCells = gl.createTexture();
+      texBlack = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texBlack);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+      tex2D(texBlack, gl.NEAREST, gl.CLAMP_TO_EDGE);
       const d = makeVAO(new Float32Array(VSTRIDE), new Uint32Array(1), true);
       doorVAO = d.vao; doorVBO = d.vb; doorIBO = d.ib;
       // sprites: a unit quad + per-instance data
