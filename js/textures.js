@@ -308,13 +308,13 @@ function drawCeiling(kind) {
 // Draws a sprite in the 64x64 design space onto a SPR_HI canvas (MODERN), with a
 // TEX x TEX copy in `lo` for RETRO. outline: thin dark outline so it reads against walls.
 // keep: also return the canvas (used to derive the death frames).
-function makeSprite(draw, outline = false, keep = false, size = SPR_HI) {
+function makeSprite(draw, outline = false, keep = false, size = SPR_HI, noLo = false) {
   const c = newCanvas(size, size);
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
   g.scale(size / 64, size / 64);
   draw(g);
-  const spr = spriteFromCanvas(c, outline);
+  const spr = noLo ? spritePixels(c, outline) : spriteFromCanvas(c, outline);
   if (keep) spr.canvas = c;
   return spr;
 }
@@ -583,14 +583,14 @@ function buildEnemySprites(drawFn, debrisCols, seed) {
   const atk = makeSprite((g) => drawFn(g, 0, true), true);
   const die = [glitchFrame(walk[0].canvas, 6), glitchFrame(walk[1].canvas, 14)];
   for (const w of walk) w.canvas = null;   // only needed to derive the death frames
-  return { walk, atk, die, dead: debrisFrame(debrisCols, seed), draw: drawFn };
+  return { walk, atk, die, dead: debrisFrame(debrisCols, seed), draw: drawFn, debris: debrisCols };
 }
 
 // RETRO: Doom-style rotations. 8 views around the monster, 0 = facing the player,
 // counting with the monster turning to its left (the player sees its right side at 2).
 const ROT_VIEW = [[0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [3, -1], [2, -1], [1, -1]];
 const ROT_SQUASH = [1, 0.86, 0.68, 0.86, 1];
-function rotSprite(drawFn, phase, atk, r) {
+function rotSprite(drawFn, phase, atk, r, size = TEX) {
   const [v, dir] = ROT_VIEW[r];
   return makeSprite((g) => {
     g.translate(32, 0); g.scale(ROT_SQUASH[v], 1); g.translate(-32, 0);
@@ -599,9 +599,9 @@ function rotSprite(drawFn, phase, atk, r) {
       // the back is in its own shadow
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.globalCompositeOperation = 'source-atop';
-      g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(0, 0, TEX, TEX);
+      g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(0, 0, size, size);
     }
-  }, true, false, TEX);
+  }, true, false, size, size !== TEX);
 }
 // rot[r] = {walk: [2 frames], atk} for the 8 rotations (walk[0..1] and atk at TEX size).
 function buildRotations(S) {
@@ -611,6 +611,28 @@ function buildRotations(S) {
     atk: rotSprite(S.draw, 0, true, r),
   }));
   return S.rot;
+}
+
+// The GPU renderer's rotations, at SPR_HI. They cost too much to draw at once, so
+// warmRotations() adds one frame per call (onSprite gets it); until all three
+// frames of a view exist, hiRotation() falls back to the front sprites.
+function warmRotations(S, onSprite) {
+  if (!S.rotHi) S.rotHi = ROT_VIEW.map(() => ({ walk: [null, null], atk: null }));
+  for (let r = 0; r < 8; r++) {
+    const R = S.rotHi[r];
+    for (let k = 0; k < 3; k++) {
+      if (k < 2 ? R.walk[k] : R.atk) continue;
+      const spr = rotSprite(S.draw, k < 2 ? k : 0, k === 2, r, SPR_HI);
+      if (k < 2) R.walk[k] = spr; else R.atk = spr;
+      if (onSprite) onSprite(spr);
+      return false;
+    }
+  }
+  return true;
+}
+function hiRotation(S, r) {
+  const R = S.rotHi && S.rotHi[r];
+  return R && R.atk && R.walk[1] ? R : S;
 }
 
 // Cage nut: square M6 nut inside its spring cage (wings)
@@ -893,7 +915,8 @@ function propFrames(boxes, size, extra) {
     if (extra) extra(g, yaw, ppu, SPR_HI / 2, SPR_HI - margin);
     frames.push(spriteFromCanvas(c, true));
   }
-  return { frames, scale: size, z: -margin / ppu };
+  // the boxes themselves are kept for the GPU renderer, which draws props as meshes
+  return { frames, scale: size, z: -margin / ppu, boxes };
 }
 
 function buildDecor() {
@@ -978,6 +1001,14 @@ function buildDecor() {
     g.fillStyle = 'rgba(210,235,255,0.9)'; g.fillRect(cx - r * 0.6, top - hgt * 0.9, r * 0.25, hgt * 0.75);
     g.fillStyle = 'rgba(40,100,210,1)'; g.fillRect(cx - r, top - hgt * 0.45, r * 2, r * 0.25);
   });
+  // cylinders for the GPU renderer: {x, y, z, r, h, tex (wrapped around), top (cap texture), gloss}
+  const jug = face(24, 16, (g, w, h) => {
+    g.fillStyle = '#3f8ff0'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#7fb8ff'; g.fillRect(0, 0, w, 1.5); g.fillRect(3, 2, 2, h - 4);
+    g.fillStyle = '#2864c8'; g.fillRect(0, h * 0.55, w, 1.5);
+  });
+  const jugTop = face(4, 4, (g) => { g.fillStyle = '#5aa4ff'; g.fillRect(0, 0, 4, 4); });
+  cooler.cyls = [{ x: 0, y: 0, z: 0.62, r: 0.15, h: 0.34, tex: jug, top: jugTop, gloss: 0.9 }];
 
   // fire extinguisher: a cylinder, drawn once with shading
   const ext = makeSprite((g) => {
@@ -990,7 +1021,19 @@ function buildDecor() {
     g.fillStyle = '#eee'; g.fillRect(28.5, 46, 8, 6); g.fillStyle = '#c21d1d'; g.font = '3px monospace'; g.fillText('CO2', 29.5, 50.5);
   }, true);
 
-  return { x: crate, B: ups, f: cooler, e: { frames: [ext], scale: 0.6, z: 0 } };
+  const extBody = face(24, 16, (g, w, h) => {
+    g.fillStyle = '#c82424'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#e85050'; g.fillRect(0, 0, w, 1);
+    g.fillStyle = '#eee'; g.fillRect(2, 6, 7, 5); g.fillStyle = '#c21d1d'; g.font = '2.5px monospace'; g.fillText('CO2', 2.6, 9.6);
+  });
+  const extTop = face(4, 4, (g) => { g.fillStyle = '#a81818'; g.fillRect(0, 0, 4, 4); });
+  const valve = face(4, 4, (g) => { g.fillStyle = '#222'; g.fillRect(0, 0, 4, 4); });
+  const extProp = {
+    frames: [ext], scale: 0.6, z: 0, boxes: [{ x: 0.03, y: 0, z: 0.25, w: 0.07, d: 0.025, h: 0.02, faces: { side: valve, top: valve } }],
+    cyls: [{ x: 0, y: 0, z: 0, r: 0.052, h: 0.235, tex: extBody, top: extTop, gloss: 0.7 },
+      { x: 0, y: 0, z: 0.235, r: 0.022, h: 0.04, tex: valve, top: valve, gloss: 0.5 }],
+  };
+  return { x: crate, B: ups, f: cooler, e: extProp };
 }
 
 /* items */

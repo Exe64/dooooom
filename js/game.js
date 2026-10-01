@@ -558,6 +558,7 @@ function fire() {
   if (w.melee) { Sfx.fist(); meleeAttack(w); return; }
   if (w.proj !== 'hdd' && w.proj !== 'zip') P.flashT = 0.07;
   if (w.proj === 'sfp') P.shake = Math.max(P.shake, 0.25);
+  if (useGL) GLR.shot(INV.cur, P);
   Sfx[w.sfx]();
   // the noise wakes enemies up
   for (const e of L.enemies) {
@@ -717,6 +718,7 @@ function killEnemy(e, how) {
   L.kills++;
   Sfx.enemyDeath(sndKind(e), dist);
   if (how !== 'stomp') addFx(e.x, e.y, 'boom', 0.2 + T.z, T.boss ? 1.5 : 0.5);
+  if (useGL) GLR.kill(e);
   if ((e.type === 'bot' || e.type === 'spam') && Math.random() < 0.7) L.items.push({ x: e.x, y: e.y, type: 'a', taken: false, drop: true });
   if (T.mini) {
     L.bossAlive = L.enemies.some((o) => o !== e && alive(o) && ETYPES[o.type].boss);
@@ -951,6 +953,7 @@ function separateEnemies() {
 
 function addFx(x, y, kind, z, dur, scale) {
   L.fx.push({ x, y, kind, z, t: 0, dur, scale: scale || (kind === 'boom' ? 0.8 : kind === 'nutanix' ? 0.9 : 0.35) });
+  if (useGL) GLR.fx(kind, x, y, z, scale);
 }
 
 function projHitsWall(x, y) {
@@ -1180,12 +1183,15 @@ function render() {
 
 // Every billboard of the frame, through add(x, y, spr, scale, z, flash, bright).
 // RETRO (retro = true) picks the monsters' rotation frames (8 views, Doom-style)
-// and 8 of the props' 16 rotations.
-function collectSprites(add, retro) {
+// and 8 of the props' 16 rotations. The GPU renderer (gpu = true) gets high
+// resolution rotations, and draws props and effects itself (meshes, particles).
+function collectSprites(add, retro, gpu) {
   const frameOf = (a, t, fps) => (Array.isArray(a) ? a[((t * fps) | 0) % a.length] : a);
-  for (const d of L.decor) { const A = Assets.decor[d.type]; add(d.x, d.y, propFrame(A, d, retro), A.scale, A.z); }
-  const UPS = Assets.decor.B;
-  for (const b of L.barrels) if (!b.dead) add(b.x, b.y, propFrame(UPS, b, retro), UPS.scale, UPS.z, b.fuse >= 0);
+  if (!gpu) {
+    for (const d of L.decor) { const A = Assets.decor[d.type]; add(d.x, d.y, propFrame(A, d, retro), A.scale, A.z); }
+    const UPS = Assets.decor.B;
+    for (const b of L.barrels) if (!b.dead) add(b.x, b.y, propFrame(UPS, b, retro), UPS.scale, UPS.z, b.fuse >= 0);
+  }
   const bobT = performance.now() / 400;
   for (const it of L.items) {
     if (it.taken) continue;
@@ -1194,7 +1200,7 @@ function collectSprites(add, retro) {
   }
   for (const e of L.enemies) {
     const T = ETYPES[e.type], S = Assets.enemies[e.type];
-    const R = retro && alive(e) ? buildRotations(S)[enemyRot(e)] : S;
+    const R = !alive(e) ? S : gpu ? hiRotation(S, enemyRot(e)) : retro ? buildRotations(S)[enemyRot(e)] : S;
     let spr;
     if (e.state === 'dead') spr = S.dead;
     else if (e.state === 'dying') spr = S.die[e.timer > 0.25 ? 0 : 1];
@@ -1209,6 +1215,7 @@ function collectSprites(add, retro) {
     add(e.x, e.y, spr, scale, z, e.flash > 0);
   }
   for (const p of L.proj) add(p.x, p.y, frameOf(Assets.proj[p.kind], p.t, 16), p.scale || 0.35, p.z, false, true);
+  if (gpu) return;
   for (const f of L.fx) {
     const fr = Assets.fx[f.kind];
     const i = Math.min(fr.length - 1, (f.t / f.dur * fr.length) | 0);
@@ -1472,12 +1479,14 @@ function drawMap(g) {
 }
 
 // The 3D view through the GPU renderer; the 2D canvas over it stays transparent there.
-function renderGL() {
+// dt advances its particles (0 while paused).
+function renderGL(dt = 0) {
   const sh = P.shake > 0 ? P.shake * 7 : 0;
   GLR.render({
-    L, P, inv: INV, anim: animFrame,
+    L, P, inv: INV, anim: animFrame, dt,
+    warmBudget: state === 'briefing' ? 30 : 4,   // the briefing screen hides the background work
     shakeX: sh ? rand(-sh, sh) / W : 0, shakeY: sh ? rand(-sh, sh) / VH : 0,
-    collect: (add) => collectSprites(add, false),
+    collect: (add) => collectSprites(add, false, true),
   });
 }
 
@@ -1565,7 +1574,7 @@ function frame(ts) {
   if (state === 'playing') update(dt);
   if (shown) {
     if (useGL) {
-      renderGL(); present();
+      renderGL(state === 'playing' ? dt : 0); present();
       // the GPU works asynchronously: judge it by the time between frames
       if (state === 'playing' && !autoLowered) {
         renderCost += (raw * 1000 - renderCost) * 0.05;
@@ -1627,7 +1636,7 @@ const fmtTime = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padSt
 const CONTROLS = `
   <table class="ctl">
     <tr><td>WASD / ZQSD / ↑↓</td><td>Move</td></tr>
-    <tr><td>Mouse / ← →</td><td>Turn</td></tr>
+    <tr><td>Mouse / ← →</td><td>Turn (mouse: also look up / down in MODERN)</td></tr>
     <tr><td>Click / Ctrl</td><td>Fire</td></tr>
     <tr><td>E / Space</td><td>Open, search walls, drink</td></tr>
     <tr><td>1-8 / wheel</td><td>Switch weapon</td></tr>

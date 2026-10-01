@@ -12,28 +12,38 @@ No external assets: textures, logos, sprites, weapons and sounds are all generat
 (2D canvas + Web Audio API, with the admin's voice provided by the browser's speech synthesis). No build step, no dependencies.
 
 Two visual styles, switched with **T**, from the title screen or from the pause menu (the choice is remembered):
-- **MODERN** (default): the 3D view is rendered at 720x346 and smoothly upscaled, with 256x256 textures and sprites,
-  colored lighting, soft sprite edges and finely rendered weapons.
+- **MODERN** (default): a real 3D renderer on the GPU (WebGL2, `js/gl.js`) at the screen's native resolution,
+  with per-pixel lighting, reflections, HDR post-processing and 3D props. You can look up and down with the mouse.
 - **RETRO**: a renderer that follows Doom's own limits (`js/retro.js`), described below.
 
-MODERN costs much more CPU than RETRO. On a machine that can't keep up, it first falls back
-to a lower resolution (still smoothed), then to the LOW graphics quality.
+### The MODERN style
 
-Details:
-- **Textures** keep logos, cabling and labels readable.
-- **Props** such as pallets of servers, UPS batteries and water coolers are small 3D boxes, pre-rendered from 16 angles like Doom's rotating sprites. They show their real faces as you walk around them.
-- **Enemies and items** get a dark outline so they stand out from the racks.
+- **Geometry**: the grid becomes real walls, floors and ceilings; doors slide into the wall and secret walls
+  slide back as real panels. Everything is depth tested, so sprites and props sit properly in the room.
+- **Textures** keep logos, cabling and labels readable. They are stored in texture arrays with mipmaps and
+  anisotropic filtering: distant floors and racks don't shimmer.
+- **Lighting**, computed per pixel:
+  - a directional lightmap baked per level (8 texels per cell): pools of light under the ceiling panels with soft
+    shadows, green glow from the exit signs, red and blue from badge doors, LED spill from the racks, ambient occlusion,
+    and the direction the light comes from, so surfaces are shaded against the real lamps;
+  - normal, gloss and specular maps derived from every texture: grooves between rack units, rivets, door ribs,
+    floor tiles catch the light;
+  - up to 16 dynamic lights (muzzle flashes, projectiles, explosions, armed UPS batteries) with wall shadows;
+  - the raised floor reflects the room (planar reflection, blurred by roughness, with Fresnel).
+- **Objects**: pallets of servers, UPS batteries, water coolers and extinguishers are real meshes built from the same
+  boxes as their sprites. Monsters show 8 rotations (you can see where they look) and, like items, are lit as volumes
+  through a relief map, so lamps and explosions model them from the side. Everything standing on the floor casts a
+  soft contact shadow.
+- **Particles**: streaking sparks that bounce, embers, smoke, debris in the monsters' colors, ejected shells.
+- **Post-processing**: HDR rendering with 4x MSAA, screen-space ambient occlusion, volumetric haze with light shafts
+  under the ceiling panels, multi-level bloom, ACES tone mapping, a color grade and haze density per episode
+  (icy blue in the cooling zone, sodium lamps in the archives...), vignette, slight chromatic aberration and film grain.
 - **Weapons in hand** are small 3D models (boxes and tubes) rendered in perspective with per-face lighting:
   pixelated and outlined in RETRO, anti-aliased at 4x resolution in MODERN. They dim in dark areas and light up when firing.
-- **Lighting** is colored and baked per level into a lightmap: pools of light under the ceiling panels (with shadows),
-  green glow from the exit signs, red and blue from badge doors, LED spill from the racks, and ambient occlusion along the walls.
-  Each episode has its own mood and distance fog (icy blue in the cooling zone, sodium lamps in the archives...).
-- **Dynamic lights**: muzzle flashes, projectiles, explosions and armed UPS batteries light up walls, floors and enemies.
-- **Bloom** around LEDs, screens, neon panels and plasma, plus a soft vignette.
 
-All of this runs in the software renderer. Press **G** to switch to
-the LOW graphics mode (baked lighting only, no dynamic lights, bloom or vignette); the game also drops to LOW by itself
-on a machine that can't keep up.
+Press **G** to switch to the LOW graphics mode (no reflections, dynamic lights, occlusion or haze). On a slow GPU the
+game first lowers the 3D resolution, then switches to LOW by itself. Without WebGL2, MODERN uses the previous software
+renderer (720x346 view, smoothly upscaled, with the baked lightmap, dynamic lights and bloom).
 
 ### The RETRO style, Doom-accurate
 
@@ -74,7 +84,7 @@ Progress is saved in the browser (CONTINUE button, and a level select for unlock
 | Key | Action |
 | --- | --- |
 | WASD / ZQSD / ↑↓ | Move (QWERTY and AZERTY) |
-| Mouse / ← → | Turn |
+| Mouse / ← → | Turn (and look up and down with the mouse in MODERN) |
 | Click / Ctrl | Fire |
 | E / Space | Open doors, search walls (secret areas), drink from water coolers, activate the REBOOT terminal |
 | 1-8 / wheel | Switch weapon |

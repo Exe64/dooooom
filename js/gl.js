@@ -21,6 +21,14 @@
  * - planar reflections on the raised floor: the scene is drawn mirrored under
  *   the floor at half resolution, then blurred by mipmaps according to gloss.
  *
+ * Objects: props (server pallets, UPS batteries, water coolers, extinguishers)
+ * are real meshes built from the same boxes and faces as their sprites.
+ * Monsters show 8 rotations and, like items, are lit as volumes: a relief map
+ * (height from the distance to the sprite's edge) gives them normals and a
+ * depth offset, so they catch the lamps and dynamic lights from the side.
+ * Everything standing on the floor casts a soft contact shadow. Sparks,
+ * embers, smoke, debris and ejected casings are simulated particles.
+ *
  * Post-processing: the frame is rendered in HDR (half floats) with 4x MSAA,
  * then: screen-space ambient occlusion, volumetric haze (lit by the lightmap,
  * light shafts under the ceiling panels, glow around dynamic lights), a
@@ -38,7 +46,7 @@ const GLR = (() => {
   let worldVAO = null, worldCount = 0, floorCount = 0, worldBufs = [];
   let doorVAO = null, doorVBO = null, doorIBO = null, doorCount = 0;
   let spriteVAO = null, spriteInst = null;
-  let texWalls = null, texNrm = null, texSprites = null, texLightA = null, texLightB = null, texCells = null, texBlack = null;
+  let texWalls = null, texNrm = null, texSprites = null, texSprNrm = null, texLightA = null, texLightB = null, texCells = null, texBlack = null;
   let reflFBO = null, reflTex = null, reflDepth = null, rw = 0, rh = 0;
   let aniso = null, floatOK = false;
   let cssW = 1, cssH = 1, dpr = 1, scale = 1, bw = 1, bh = 1;
@@ -209,11 +217,11 @@ const GLR = (() => {
   uniform vec2 uJitter;
   uniform float uMirror;
   out vec2 vUv; out vec3 vPos;
-  flat out float vLayer; flat out float vFlags; flat out vec2 vFeet;
+  flat out float vLayer; flat out float vFlags; flat out vec2 vFeet; flat out float vSize;
   void main() {
     vec3 p = vec3(iPos.xy + uRight * (aQuad.x - 0.5) * iPos.w, iPos.z + (1.0 - aQuad.y) * iPos.w);
     vUv = aQuad * iTex.yz;
-    vPos = p; vLayer = iTex.x; vFlags = iTex.w; vFeet = iPos.xy;
+    vPos = p; vLayer = iTex.x; vFlags = iTex.w; vFeet = iPos.xy; vSize = iPos.w;
     gl_Position = uVP * vec4(p.xy, p.z * uMirror, 1.0);
     gl_Position.xy += uJitter * gl_Position.w;
   }`;
@@ -222,9 +230,11 @@ const GLR = (() => {
   precision highp float;
   precision highp sampler2DArray;
   in vec2 vUv; in vec3 vPos;
-  flat in float vLayer; flat in float vFlags; flat in vec2 vFeet;
-  uniform sampler2DArray uTex;
+  flat in float vLayer; flat in float vFlags; flat in vec2 vFeet; flat in float vSize;
+  uniform sampler2DArray uTex, uNrmS;
   uniform vec3 uFwd;
+  uniform vec2 uRight;
+  uniform mat4 uVP;
   ${LIGHTING}
   out vec4 oColor;
   void main() {
@@ -232,14 +242,20 @@ const GLR = (() => {
     vec4 t = texture(uTex, vec3(vUv, vLayer));
     if (t.a < 0.03) discard;
     int fl = int(vFlags + 0.5);
-    vec3 c;
+    vec3 c, F = normalize(vec3(-uFwd.xy, 0.0)), P = vPos;
     if ((fl & 2) != 0) c = t.rgb * uEmissive;
     else {
-      vec3 N = normalize(vec3(-uFwd.xy, 0.0));
-      c = shade(t.rgb, N, vPos, vFeet, 0.35, 0.25, 1.0);
+      // relief: normal from the height map, surface pushed toward the viewer
+      vec4 nm = texture(uNrmS, vec3(vUv, vLayer));
+      vec3 nt = nm.rgb * 2.0 - 1.0;
+      vec3 N = normalize(vec3(uRight, 0.0) * nt.x - vec3(0.0, 0.0, 1.0) * nt.y + F * max(nt.z, 0.05));
+      P += F * (nm.a - 0.5) * vSize * 0.3;
+      c = shade(t.rgb, N, P, vFeet, 0.35, 0.3, 0.3);
       if ((fl & 1) != 0) c = mix(c, vec3(1.6), 0.5);
-      c = fogged(c, vPos);
+      c = fogged(c, P);
     }
+    vec4 cp = uVP * vec4(P.xy, P.z * uMirror, 1.0);
+    gl_FragDepth = clamp(cp.z / cp.w * 0.5 + 0.5, 0.0, 1.0);
     oColor = vec4(uRaw > 0.5 ? c : tonemap(c), t.a);
   }`;
 
@@ -309,10 +325,10 @@ const GLR = (() => {
     }
   }
 
-  function newArray(layers, fmt) {
+  function newArray(layers, fmt, size = TS) {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
-    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, LEVELS, fmt, TS, TS, layers);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, Math.log2(size) + 1, fmt, size, size, layers);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -329,22 +345,22 @@ const GLR = (() => {
   const TILE_MAT = { '#': 'concrete', '?': 'concrete', W: 'warn', R: 'rack', S: 'rack', N: 'rack', C: 'crac', D: 'door', 1: 'door', 2: 'door', X: 'exit' };
 
   // Normal (rg), gloss (b) and specular (a) maps, from the texture's luminance as a height field.
-  function normalMap(t, mat) {
-    const N = TS, px = t.px, em = t.em, [S, gl0, sp0] = MATERIALS[mat];
-    const lum = new Float32Array(N * N), h = new Float32Array(N * N);
-    for (let i = 0; i < N * N; i++) { const c = px[i]; lum[i] = ((c & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + ((c >> 16) & 255) * 0.11) / 255; }
-    const at = (a, x, y) => a[((y + N) % N) * N + ((x + N) % N)];
+  function normalMap(t, mat) { return heightNormals(t.px, t.em, TS, TS, ...MATERIALS[mat]); }
+  function heightNormals(px, em, W, H, S, gl0, sp0) {
+    const n = W * H, lum = new Float32Array(n), h = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const c = px[i]; lum[i] = ((c & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + ((c >> 16) & 255) * 0.11) / 255; }
+    const at = (a, x, y) => a[((y + H) % H) * W + ((x + W) % W)];
     const blur = (src, dst) => {
-      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-        dst[y * N + x] = (at(src, x, y) * 4 + at(src, x - 1, y) + at(src, x + 1, y) + at(src, x, y - 1) + at(src, x, y + 1)) / 8;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        dst[y * W + x] = (at(src, x, y) * 4 + at(src, x - 1, y) + at(src, x + 1, y) + at(src, x, y - 1) + at(src, x, y + 1)) / 8;
       }
     };
-    const tmp = new Float32Array(N * N);
+    const tmp = new Float32Array(n);
     blur(lum, tmp); blur(tmp, h);
-    const out = new Uint8Array(N * N * 4);
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      const i = y * N + x, o = i * 4;
-      if (em[i]) { out[o] = 128; out[o + 1] = 128; out[o + 2] = 230; out[o + 3] = 150; continue; }
+    const out = new Uint8Array(n * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x, o = i * 4;
+      if (em && em[i]) { out[o] = 128; out[o + 1] = 128; out[o + 2] = 230; out[o + 3] = 150; continue; }
       const gx = (at(h, x + 1, y - 1) + 2 * at(h, x + 1, y) + at(h, x + 1, y + 1)) - (at(h, x - 1, y - 1) + 2 * at(h, x - 1, y) + at(h, x - 1, y + 1));
       const gy = (at(h, x - 1, y + 1) + 2 * at(h, x, y + 1) + at(h, x + 1, y + 1)) - (at(h, x - 1, y - 1) + 2 * at(h, x, y - 1) + at(h, x + 1, y - 1));
       let nx = -gx * S, ny = -gy * S;
@@ -381,7 +397,8 @@ const GLR = (() => {
   }
 
   // Sprites: layers are given out on first use (CPU mips, edge dilation).
-  const SPR_CAP = 224;
+  // Each sprite also gets a relief map at half resolution (rgb: normal, a: height).
+  const SPR_CAP = 240, NTS = TS / 2;
   let sprLayer = new Map(), sprNext = 0;
   function spriteLayer(spr) {
     let l = sprLayer.get(spr);
@@ -397,7 +414,47 @@ const GLR = (() => {
     for (let m = 0; m < Math.min(LEVELS, mips.length); m++) {
       gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, m, 0, 0, l, Math.max(1, w >> m), Math.max(1, h >> m), 1, gl.RGBA, gl.UNSIGNED_BYTE, mips[m]);
     }
+    const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
+    const rel = mipChain(reliefMap(mips[1] || mips[0], hw, hh), hw, hh);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texSprNrm);
+    for (let m = 0; m < Math.min(LEVELS - 1, rel.length); m++) {
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, m, 0, 0, l, Math.max(1, hw >> m), Math.max(1, hh >> m), 1, gl.RGBA, gl.UNSIGNED_BYTE, rel[m]);
+    }
     return l;
+  }
+
+  // Rounded relief of a sprite: height from the distance to its edge (chamfer
+  // distance transform), plus a little of its shading as detail.
+  function reliefMap(rgba, w, h) {
+    const n = w * h, D = Math.max(3, w / 11), d = new Float32Array(n);
+    for (let i = 0; i < n; i++) d[i] = rgba[i * 4 + 3] >= 110 ? 1e6 : 0;
+    const get = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? 0 : d[y * w + x]);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (d[i]) d[i] = Math.min(d[i], get(x - 1, y) + 1, get(x, y - 1) + 1, get(x - 1, y - 1) + 1.414, get(x + 1, y - 1) + 1.414);
+    }
+    for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (d[i]) d[i] = Math.min(d[i], get(x + 1, y) + 1, get(x, y + 1) + 1, get(x + 1, y + 1) + 1.414, get(x - 1, y + 1) + 1.414);
+    }
+    const hgt = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      if (!d[i]) continue;
+      const t = Math.min(1, d[i] / D), lum = (rgba[i * 4] * 0.3 + rgba[i * 4 + 1] * 0.59 + rgba[i * 4 + 2] * 0.11) / 255;
+      hgt[i] = Math.sqrt(1 - (1 - t) * (1 - t)) * 0.9 + lum * 0.1;
+    }
+    const H = (x, y) => hgt[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+    const out = new Uint8Array(n * 4), k = D * 0.45;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, o = i * 4;
+      let nx = -(H(x + 1, y) - H(x - 1, y)) * k, ny = -(H(x, y + 1) - H(x, y - 1)) * k;
+      const l = Math.hypot(nx, ny, 1);
+      out[o] = Math.round((nx / l * 0.5 + 0.5) * 255);
+      out[o + 1] = Math.round((ny / l * 0.5 + 0.5) * 255);
+      out[o + 2] = Math.round((1 / l * 0.5 + 0.5) * 255);
+      out[o + 3] = Math.round(hgt[i] * 255);
+    }
+    return out;
   }
 
   function tex2D(t, filter, wrap) {
@@ -635,6 +692,31 @@ const GLR = (() => {
     buildWorld(L);
     bake(L);
     updateCells(L, true);
+    parts.length = 0;
+    // a fresh sprite pool for the level, filled in the background (see warmUp)
+    sprLayer = new Map(); sprNext = 0;
+    warm.length = 0; warmTypes.clear();
+    for (const e of L.enemies) queueType(e.type);
+    const all = (v) => (Array.isArray(v) ? v : [v]);
+    for (const k of Object.keys(Assets.proj)) warm.push(() => { all(Assets.proj[k]).forEach(spriteLayer); return true; });
+    for (const k of Object.keys(Assets.items)) warm.push(() => { spriteLayer(Assets.items[k]); return true; });
+  }
+
+  // Background work, a few milliseconds per frame: monsters' rotations and sprite
+  // uploads, so that nothing stalls a frame when it first shows up.
+  const warm = [], warmTypes = new Set();
+  function queueType(type) {
+    if (warmTypes.has(type)) return;
+    warmTypes.add(type);
+    const S = Assets.enemies[type];
+    warm.push(() => { S.walk.forEach(spriteLayer); spriteLayer(S.atk); return true; });
+    warm.push(() => warmRotations(S, spriteLayer));
+    warm.push(() => { S.die.forEach(spriteLayer); spriteLayer(S.dead); return true; });
+  }
+  function warmUp(L, budget) {
+    for (const e of L.enemies) if (!warmTypes.has(e.type)) queueType(e.type);
+    const t0 = performance.now();
+    while (warm.length && performance.now() - t0 < budget) if (warm[0]()) warm.shift();
   }
 
   /* -------------------------------------------------------------- camera */
@@ -674,6 +756,455 @@ const GLR = (() => {
     sprData[o + 7] = (flash ? 1 : 0) | (bright ? 2 : 0);
     sprDepth[sprN] = dx * dx + dy * dy;
     sprN++;
+  }
+
+  /* ------------------------------------------------------------- objects */
+  // Props: real meshes from the boxes and cylinders that their sprites were drawn
+  // from (textures.js), textured from one atlas of their face canvases.
+  const PROP_VS = `#version 300 es
+  layout(location=0) in vec3 aPos;
+  layout(location=1) in vec2 aUv;
+  layout(location=2) in vec3 aNrm;
+  layout(location=3) in vec3 aTan;
+  layout(location=4) in vec3 aBit;
+  layout(location=5) in vec2 aMat;
+  layout(location=6) in vec4 iProp;   // x, y, angle, flags (1: armed UPS)
+  uniform mat4 uVP;
+  uniform float uMirror;
+  uniform vec2 uJitter;
+  out vec3 vPos; out vec2 vUv; out vec3 vNrm; out vec3 vTan; out vec3 vBit; out vec2 vMat;
+  flat out float vFlags;
+  void main() {
+    float c = cos(iProp.z), s = sin(iProp.z);
+    mat2 R = mat2(c, s, -s, c);
+    vPos = vec3(R * aPos.xy + iProp.xy, aPos.z);
+    vNrm = vec3(R * aNrm.xy, aNrm.z); vTan = vec3(R * aTan.xy, aTan.z); vBit = vec3(R * aBit.xy, aBit.z);
+    vUv = aUv; vMat = aMat; vFlags = iProp.w;
+    gl_Position = uVP * vec4(vPos.xy, vPos.z * uMirror, 1.0);
+    gl_Position.xy += uJitter * gl_Position.w;
+  }`;
+  const PROP_FS = `#version 300 es
+  precision highp float;
+  in vec3 vPos; in vec2 vUv; in vec3 vNrm; in vec3 vTan; in vec3 vBit; in vec2 vMat;
+  flat in float vFlags;
+  uniform sampler2D uAtlas, uAtlasN;
+  uniform float uTime;
+  ${LIGHTING}
+  out vec4 oColor;
+  void main() {
+    vec4 t = texture(uAtlas, vUv);
+    vec2 nxy = texture(uAtlasN, vUv).rg * 2.0 - 1.0;
+    vec3 Ng = normalize(vNrm);
+    vec3 N = normalize(normalize(vTan) * nxy.x + normalize(vBit) * nxy.y + Ng * sqrt(max(0.0, 1.0 - dot(nxy, nxy))));
+    vec3 c = shade(t.rgb, N, vPos, vPos.xy + Ng.xy * 0.04, vMat.x, vMat.y, 0.0);
+    if (vFlags > 0.5) c += t.rgb * vec3(4.0, 0.3, 0.2) * (0.55 + 0.45 * sin(uTime * 20.0));
+    c = fogged(c, vPos);
+    oColor = vec4(uRaw > 0.5 ? c : tonemap(c), 1.0);
+  }`;
+
+  const PSTRIDE = 16;   // pos3 uv2 nrm3 tan3 bit3 mat2
+  const PROP_MAT = { x: [0.12, 0.08], B: [0.5, 0.5], f: [0.45, 0.4], e: [0.55, 0.5] };
+  let progProp, propVAO, propInst, propMeshes = {}, texAtlas, texAtlasN;
+  const PROP_MAX = 512, propData = new Float32Array(PROP_MAX * 4);
+
+  function buildProps() {
+    const D = Assets.decor, canv = [];
+    const addC = (c) => { if (c && !canv.includes(c)) canv.push(c); };
+    for (const k of Object.keys(D)) {
+      for (const b of D[k].boxes || []) Object.values(b.faces).forEach(addC);
+      for (const c of D[k].cyls || []) { addC(c.tex); addC(c.top); }
+    }
+    // shelf packing, with 2 texel gutters made of stretched edges
+    const AW = 1024, PAD = 2, rects = new Map();
+    canv.sort((a, b) => b.height - a.height);
+    let x = 0, y = 0, rowH = 0;
+    for (const c of canv) {
+      const w = c.width + PAD * 2, h = c.height + PAD * 2;
+      if (x + w > AW) { x = 0; y += rowH; rowH = 0; }
+      rects.set(c, [x + PAD, y + PAD, c.width, c.height]);
+      x += w; rowH = Math.max(rowH, h);
+    }
+    const AH = 1 << Math.ceil(Math.log2(Math.max(4, y + rowH)));
+    const at = newCanvas(AW, AH), g = at.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    for (const [c, [rx, ry, cw, ch]] of rects) { g.drawImage(c, rx - PAD, ry - PAD, cw + PAD * 2, ch + PAD * 2); g.drawImage(c, rx, ry); }
+    const img = g.getImageData(0, 0, AW, AH);
+    const upload = (fmt, data) => {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, fmt, AW, AH, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      tex2D(t, gl.LINEAR_MIPMAP_LINEAR, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    texAtlas = upload(gl.SRGB8_ALPHA8, new Uint8Array(img.data.buffer));
+    texAtlasN = upload(gl.RGBA8, heightNormals(new Uint32Array(img.data.buffer), null, AW, AH, 1.4, 0.3, 0.3));
+    const uvr = (c) => { const [rx, ry, cw, ch] = rects.get(c); return [(rx + 0.5) / AW, (ry + 0.5) / AH, (rx + cw - 0.5) / AW, (ry + ch - 0.5) / AH]; };
+
+    const V = [];
+    const vert = (p, uv, n, t, b, m) => V.push(p[0], p[1], p[2], uv[0], uv[1], n[0], n[1], n[2], t[0], t[1], t[2], b[0], b[1], b[2], m[0], m[1]);
+    const nrm = (v) => { const l = Math.hypot(...v) || 1; return v.map((c) => c / l); };
+    // quad from origin o, along u to ue and along v to ve
+    const face = (tex, o, ue, ve, n, m) => {
+      if (!tex) return;
+      const [u0, v0, u1, v1] = uvr(tex), p2 = [ue[0] + ve[0] - o[0], ue[1] + ve[1] - o[1], ue[2] + ve[2] - o[2]];
+      const T = nrm([ue[0] - o[0], ue[1] - o[1], ue[2] - o[2]]), B = nrm([ve[0] - o[0], ve[1] - o[1], ve[2] - o[2]]);
+      const q = [[o, [u0, v0]], [ue, [u1, v0]], [p2, [u1, v1]], [ve, [u0, v1]]];
+      for (const k of [0, 1, 2, 0, 2, 3]) vert(q[k][0], q[k][1], n, T, B, m);
+    };
+    for (const k of Object.keys(D)) {
+      const first = V.length / PSTRIDE, m = PROP_MAT[k] || [0.3, 0.3];
+      for (const b of D[k].boxes || []) {
+        const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, y0 = b.y - b.d / 2, y1 = b.y + b.d / 2, z0 = b.z, z1 = b.z + b.h, F = b.faces;
+        face(F.front || F.side, [x1, y0, z1], [x0, y0, z1], [x1, y0, z0], [0, -1, 0], m);
+        face(F.back || F.side, [x0, y1, z1], [x1, y1, z1], [x0, y1, z0], [0, 1, 0], m);
+        face(F.left || F.side, [x0, y0, z1], [x0, y1, z1], [x0, y0, z0], [-1, 0, 0], m);
+        face(F.right || F.side, [x1, y1, z1], [x1, y0, z1], [x1, y1, z0], [1, 0, 0], m);
+        face(F.top, [x0, y1, z1], [x1, y1, z1], [x0, y0, z1], [0, 0, 1], m);
+      }
+      for (const c of D[k].cyls || []) {
+        const n = 18, [u0, v0, u1, v1] = uvr(c.tex), cm = [c.gloss, 0.6];
+        const ring = (i, z) => [c.x + Math.cos(i / n * Math.PI * 2) * c.r, c.y + Math.sin(i / n * Math.PI * 2) * c.r, z];
+        for (let i = 0; i < n; i++) {
+          const a0 = i / n * Math.PI * 2, a1 = (i + 1) / n * Math.PI * 2;
+          const ua = u1 - (u1 - u0) * i / n, ub = u1 - (u1 - u0) * (i + 1) / n;
+          const n0 = [Math.cos(a0), Math.sin(a0), 0], n1 = [Math.cos(a1), Math.sin(a1), 0];
+          const t0 = [Math.sin(a0), -Math.cos(a0), 0], t1 = [Math.sin(a1), -Math.cos(a1), 0], B = [0, 0, -1];
+          const q = [[ring(i, c.z + c.h), [ua, v0], n0, t0], [ring(i + 1, c.z + c.h), [ub, v0], n1, t1], [ring(i + 1, c.z), [ub, v1], n1, t1], [ring(i, c.z), [ua, v1], n0, t0]];
+          for (const k2 of [0, 1, 2, 0, 2, 3]) vert(q[k2][0], q[k2][1], q[k2][2], q[k2][3], B, cm);
+          const tc = uvr(c.top), mid = [(tc[0] + tc[2]) / 2, (tc[1] + tc[3]) / 2];
+          vert([c.x, c.y, c.z + c.h], mid, [0, 0, 1], [1, 0, 0], [0, 1, 0], cm);
+          vert(ring(i, c.z + c.h), mid, [0, 0, 1], [1, 0, 0], [0, 1, 0], cm);
+          vert(ring(i + 1, c.z + c.h), mid, [0, 0, 1], [1, 0, 0], [0, 1, 0], cm);
+        }
+      }
+      propMeshes[k] = { first, count: V.length / PSTRIDE - first };
+    }
+    propVAO = gl.createVertexArray();
+    gl.bindVertexArray(propVAO);
+    const vb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(V), gl.STATIC_DRAW);
+    [[0, 3, 0], [1, 2, 3], [2, 3, 5], [3, 3, 8], [4, 3, 11], [5, 2, 14]].forEach(([loc, n, off]) => {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, n, gl.FLOAT, false, PSTRIDE * 4, off * 4);
+    });
+    propInst = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, propInst);
+    gl.bufferData(gl.ARRAY_BUFFER, propData.byteLength, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(6);
+    gl.vertexAttribDivisor(6, 1);
+    gl.bindVertexArray(null);
+    progProp = compile(PROP_VS, PROP_FS);
+  }
+
+  // The frame's props, grouped by type: [type, first instance, count].
+  const propGroups = [];
+  function gatherProps(L) {
+    propGroups.length = 0;
+    let n = 0;
+    for (const k of Object.keys(propMeshes)) {
+      const first = n;
+      const put = (o, armed) => { if (n < PROP_MAX) { propData.set([o.x, o.y, o.face || 0, armed ? 1 : 0], n * 4); n++; } };
+      if (k === 'B') { for (const b of L.barrels) if (!b.dead) put(b, b.fuse >= 0); }
+      else for (const d of L.decor) if (d.type === k) put(d, false);
+      if (n > first) propGroups.push([k, first, n - first]);
+    }
+    if (n) { gl.bindBuffer(gl.ARRAY_BUFFER, propInst); gl.bufferSubData(gl.ARRAY_BUFFER, 0, propData.subarray(0, n * 4)); }
+  }
+
+  function drawProps(L, mirror) {
+    if (!propGroups.length) return;
+    gl.useProgram(progProp.p);
+    setCommon(progProp, L, mirror);
+    gl.uniform1f(progProp.u.uTime, performance.now() / 1000 % 1000);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texAtlas); gl.uniform1i(progProp.u.uAtlas, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texAtlasN); gl.uniform1i(progProp.u.uAtlasN, 1);
+    gl.bindVertexArray(propVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, propInst);
+    for (const [k, first, count] of propGroups) {
+      gl.vertexAttribPointer(6, 4, gl.FLOAT, false, 16, first * 16);
+      gl.drawArraysInstanced(gl.TRIANGLES, propMeshes[k].first, propMeshes[k].count, count);
+    }
+  }
+
+  // Contact shadows: soft dark ellipses multiplied onto the floor under everything that stands on it.
+  const SHADOW_VS = `#version 300 es
+  layout(location=0) in vec2 aQuad;
+  layout(location=1) in vec4 iSh;     // x, y, radius, strength
+  uniform mat4 uVP;
+  uniform vec2 uJitter;
+  out vec2 vQ; flat out float vK;
+  void main() {
+    vQ = aQuad; vK = iSh.w;
+    gl_Position = uVP * vec4(iSh.xy + aQuad * iSh.z, 0.003, 1.0);
+    gl_Position.xy += uJitter * gl_Position.w;
+  }`;
+  const SHADOW_FS = `#version 300 es
+  precision highp float;
+  in vec2 vQ; flat in float vK;
+  out vec4 oColor;
+  void main() {
+    float a = vK * (1.0 - smoothstep(0.1, 1.0, dot(vQ, vQ)));
+    oColor = vec4(vec3(1.0 - a), 1.0);
+  }`;
+  const SH_MAX = 512, shData = new Float32Array(SH_MAX * 4);
+  const PROP_SHADOW = { x: [0.62, 0.55], B: [0.42, 0.5], f: [0.26, 0.45], e: [0.1, 0.4] };
+  let progShadow, shadowVAO, shadowInst, shN = 0;
+  function gatherShadows(L) {
+    shN = 0;
+    const push = (x, y, r, k) => { if (shN < SH_MAX) { shData.set([x, y, r, k], shN * 4); shN++; } };
+    for (const e of L.enemies) {
+      if (!alive(e)) continue;
+      const T = ETYPES[e.type], sc = T.scale * (e.shrunk > 0 ? 0.3 : 1);
+      push(e.x, e.y, Math.max(0.12, sc * 0.33), T.z > 0.2 ? 0.3 : 0.55);
+    }
+    for (const it of L.items) if (!it.taken) push(it.x, it.y, 0.17, 0.4);
+    for (const d of L.decor) { const s = PROP_SHADOW[d.type]; if (s) push(d.x, d.y, s[0], s[1]); }
+    for (const b of L.barrels) if (!b.dead) push(b.x, b.y, PROP_SHADOW.B[0], PROP_SHADOW.B[1]);
+    if (shN) { gl.bindBuffer(gl.ARRAY_BUFFER, shadowInst); gl.bufferSubData(gl.ARRAY_BUFFER, 0, shData.subarray(0, shN * 4)); }
+  }
+  function drawShadows() {
+    if (!shN) return;
+    gl.useProgram(progShadow.p);
+    gl.uniformMatrix4fv(progShadow.u.uVP, false, VP);
+    gl.uniform2f(progShadow.u.uJitter, frameJitter[0], frameJitter[1]);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
+    gl.bindVertexArray(shadowVAO);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, shN);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+  }
+
+  // Particles: simulated on the CPU (gravity, drag, bounces on the floor and walls),
+  // drawn as instanced quads. Kinds: 0 glow, 1 streak (both additive), 2 smoke, 3 chunk.
+  const PART_VS = `#version 300 es
+  layout(location=0) in vec2 aQuad;
+  layout(location=1) in vec4 iA;      // position, size
+  layout(location=2) in vec4 iC;      // color, alpha
+  layout(location=3) in vec4 iV;      // velocity, kind
+  uniform mat4 uVP;
+  uniform vec2 uJitter;
+  uniform float uMirror;
+  uniform vec3 uEye, uR3, uU3;
+  out vec2 vQ; out vec4 vC; flat out float vKind;
+  void main() {
+    vec3 p = iA.xyz, w;
+    float s = iA.w;
+    if (abs(iV.w - 1.0) < 0.5) {
+      // streak stretched along its velocity
+      float sp = length(iV.xyz);
+      vec3 dir = sp > 1e-3 ? iV.xyz / sp : uU3;
+      vec3 side = cross(dir, normalize(uEye - p));
+      float sl = length(side);
+      side = sl > 1e-3 ? side / sl : uR3;
+      w = p + dir * aQuad.y * (s + sp * 0.03) + side * aQuad.x * s * 0.3;
+    } else w = p + uR3 * aQuad.x * s + uU3 * aQuad.y * s;
+    vQ = aQuad; vC = iC; vKind = iV.w;
+    gl_Position = uVP * vec4(w.xy, w.z * uMirror, 1.0);
+    gl_Position.xy += uJitter * gl_Position.w;
+  }`;
+  const PART_FS = `#version 300 es
+  precision highp float;
+  in vec2 vQ; in vec4 vC; flat in float vKind;
+  uniform float uRaw, uExposure;
+  out vec4 oColor;
+  void main() {
+    float r2 = dot(vQ, vQ);
+    vec4 c;
+    if (vKind < 1.5) {
+      if (r2 > 1.0) discard;
+      c = vec4(vC.rgb * vC.a * exp(-r2 * 3.5) * (1.0 - r2), 1.0);
+    } else if (vKind < 2.5) {
+      if (r2 > 1.0) discard;
+      float a = 1.0 - r2;
+      c = vec4(vC.rgb, vC.a * a * a);
+    } else c = vC;
+    if (uRaw < 0.5) c.rgb = pow(1.0 - exp(-c.rgb * uExposure), vec3(1.0 / 2.2));
+    oColor = c;
+  }`;
+  const P_MAX = 2400, P_F = 12;
+  const parts = [], partAdd = new Float32Array(P_MAX * P_F), partAlpha = new Float32Array(P_MAX * P_F);
+  let progPart, partVAO, partInst, nAdd = 0, nAlpha = 0;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const hexLin = (h) => [1, 3, 5].map((i) => (parseInt(h.slice(i, i + 2), 16) / 255) ** 2.2);
+
+  // n particles from (x, y, z): o = {kind, col, alpha, speed: [a, b], up, life: [a, b], size, grow, grav, drag, bounce, lit}
+  function burst(x, y, z, n, o) {
+    for (let i = 0; i < n && parts.length < P_MAX; i++) {
+      const th = Math.random() * Math.PI * 2, cz = rnd(-0.6, 1), sz = Math.sqrt(1 - cz * cz), sp = rnd(o.speed[0], o.speed[1]);
+      const life = rnd(o.life[0], o.life[1]);
+      parts.push({
+        x, y, z, vx: Math.cos(th) * sz * sp, vy: Math.sin(th) * sz * sp, vz: cz * sp + (o.up || 0),
+        life, max: life, size: o.size * rnd(0.7, 1.3), grow: o.grow || 0, col: o.col, a: o.alpha || 1,
+        kind: o.kind, grav: o.grav || 0, drag: o.drag || 0, bounce: o.bounce || 0.3, lit: !!o.lit,
+      });
+    }
+  }
+  const FX_PARTS = {
+    spark: (x, y, z, s) => {
+      burst(x, y, z, 10, { kind: 1, col: [4, 2.4, 0.9], speed: [2, 5], life: [0.2, 0.45], size: 0.02, grav: 8, bounce: 0.3 });
+      burst(x, y, z, 1, { kind: 0, col: [2.5, 1.4, 0.6], speed: [0, 0], life: [0.1, 0.1], size: 0.15 * s });
+    },
+    plasmaHit: (x, y, z, s) => {
+      burst(x, y, z, 14, { kind: 1, col: [1.2, 2.6, 4.5], speed: [2, 5], life: [0.2, 0.5], size: 0.02, grav: 4, bounce: 0.3 });
+      burst(x, y, z, 1, { kind: 0, col: [0.8, 1.8, 3.6], speed: [0, 0], life: [0.14, 0.14], size: 0.3 * s });
+    },
+    boom: (x, y, z, s) => {
+      burst(x, y, z, Math.round(28 * s), { kind: 1, col: [4.5, 2.2, 0.6], speed: [2, 6], life: [0.25, 0.6], size: 0.025, grav: 7, bounce: 0.3 });
+      burst(x, y, z, Math.round(10 * s), { kind: 0, col: [3, 1.2, 0.3], speed: [0.5, 2], up: 0.6, life: [0.6, 1.2], size: 0.03, grav: 1.5, drag: 1.5 });
+      burst(x, y, z, Math.round(7 * s), { kind: 2, col: [0.05, 0.045, 0.04], alpha: 0.55, speed: [0.2, 0.8], up: 0.35, life: [1, 1.7], size: 0.18 * s, grow: 0.35, drag: 2, lit: true });
+      burst(x, y, z, 1, { kind: 0, col: [2.5, 1.2, 0.4], speed: [0, 0], life: [0.2, 0.2], size: Math.min(0.45, 0.4 * s) });
+    },
+    bigBoom: (x, y, z, s) => {
+      burst(x, y, z, 70, { kind: 1, col: [5, 2.4, 0.6], speed: [3, 8], life: [0.3, 0.8], size: 0.03, grav: 7, bounce: 0.35 });
+      burst(x, y, z, 30, { kind: 0, col: [3.5, 1.3, 0.3], speed: [0.5, 3], up: 0.8, life: [0.8, 1.6], size: 0.035, grav: 1.5, drag: 1.2 });
+      burst(x, y, z, 16, { kind: 2, col: [0.04, 0.035, 0.03], alpha: 0.6, speed: [0.3, 1.4], up: 0.4, life: [1.4, 2.4], size: 0.3, grow: 0.45, drag: 1.8, lit: true });
+      burst(x, y, z, 12, { kind: 3, col: [0.06, 0.06, 0.07], speed: [2, 4.5], up: 2, life: [2, 3], size: 0.04, grav: 9.8, bounce: 0.35, lit: true });
+      burst(x, y, z, 1, { kind: 0, col: [3, 1.4, 0.45], speed: [0, 0], life: [0.28, 0.28], size: 0.5 });
+    },
+    nutanix: (x, y, z, s) => {
+      burst(x, y, z, 40, { kind: 0, col: [1.5, 0.9, 4.5], speed: [0.3, 1.6], up: 0.9, life: [0.6, 1.2], size: 0.03, drag: 2 });
+      burst(x, y, z, 1, { kind: 0, col: [1, 0.6, 2.5], speed: [0, 0], life: [0.3, 0.3], size: 0.45 });
+    },
+    smoke: (x, y, z) => burst(x, y, z, 1, { kind: 2, col: [0.06, 0.06, 0.06], alpha: 0.4, speed: [0, 0.2], up: 0.2, life: [0.6, 1], size: 0.08, grow: 0.25, drag: 2, lit: true }),
+  };
+  const FX_SCALE = { boom: 0.8, nutanix: 0.9 };
+  function fx(kind, x, y, z, scale) {
+    const f = FX_PARTS[kind];
+    if (f) f(x, y, z, (scale || FX_SCALE[kind] || 0.35) / (FX_SCALE[kind] || 0.35));
+  }
+  // Debris of a killed monster, in its colors.
+  function kill(e) {
+    const S = Assets.enemies[e.type], T = ETYPES[e.type], cols = (S && S.debris) || ['#555555'];
+    for (let i = 0; i < 14; i++) {
+      burst(e.x, e.y, 0.2 + T.z + T.scale * 0.3, 1, { kind: 3, col: hexLin(cols[i % cols.length]), speed: [1.2, 3.2], up: 1.6, life: [2, 3], size: 0.03 * T.scale + 0.015, grav: 9.8, bounce: 0.35, lit: true });
+    }
+  }
+  // Casings and muzzle smoke when the player fires.
+  function shot(cur, P) {
+    const ca = Math.cos(P.a), sa = Math.sin(P.a), rx = -sa, ry = ca;
+    const mx = P.x + ca * 0.4 + rx * 0.08, my = P.y + sa * 0.4 + ry * 0.08;
+    const casing = (col, size) => parts.length < P_MAX && parts.push({
+      x: P.x + ca * 0.5 + rx * 0.2, y: P.y + sa * 0.5 + ry * 0.2, z: 0.3,
+      vx: rx * rnd(1.2, 2.2) + ca * rnd(-0.2, 0.4), vy: ry * rnd(1.2, 2.2) + sa * rnd(-0.2, 0.4), vz: rnd(1, 2),
+      life: 3, max: 3, size, grow: 0, col, a: 1, kind: 3, grav: 9.8, drag: 0.3, bounce: 0.45, lit: true,
+    });
+    if (cur === 2) {
+      casing([0.55, 0.04, 0.03], 0.014);
+      burst(mx, my, 0.4, 4, { kind: 2, col: [0.08, 0.08, 0.08], alpha: 0.35, speed: [0.1, 0.4], up: 0.15, life: [0.5, 0.9], size: 0.06, grow: 0.3, drag: 3, lit: true });
+    } else if (cur === 3) {
+      if (Math.random() < 0.6) casing([0.75, 0.5, 0.12], 0.009);
+    } else if (cur === 4) {
+      burst(mx, my, 0.35, 6, { kind: 2, col: [0.08, 0.08, 0.08], alpha: 0.4, speed: [0.1, 0.5], up: 0.1, life: [0.6, 1.1], size: 0.08, grow: 0.35, drag: 3, lit: true });
+    }
+  }
+
+  const solidCell = (L, x, y) => {
+    const cx = x | 0, cy = y | 0;
+    if (x < 0 || y < 0 || cx >= L.w || cy >= L.h) return true;
+    const i = cy * L.w + cx, d = L.doors[i];
+    return L.map[i] !== 0 && !(d && d.open > 0.9);
+  };
+  function stepParticles(L, dt) {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      p.life -= dt;
+      if (p.life <= 0) { parts[i] = parts[parts.length - 1]; parts.pop(); continue; }
+      if (!dt) continue;
+      p.vz -= p.grav * dt;
+      const dr = Math.max(0, 1 - p.drag * dt);
+      p.vx *= dr; p.vy *= dr; p.vz *= dr;
+      const nx = p.x + p.vx * dt;
+      if (solidCell(L, nx, p.y)) p.vx *= -0.4; else p.x = nx;
+      const ny = p.y + p.vy * dt;
+      if (solidCell(L, p.x, ny)) p.vy *= -0.4; else p.y = ny;
+      p.z += p.vz * dt;
+      const rad = p.kind === 3 ? p.size * 0.5 : 0.005;
+      if (p.z < rad) {
+        p.z = rad;
+        if (p.vz < 0) p.vz = -p.vz * p.bounce;
+        p.vx *= 0.7; p.vy *= 0.7;
+        if (p.vz < 0.25) p.vz = 0;
+      }
+      if (p.z > 0.98) { p.z = 0.98; p.vz = -Math.abs(p.vz) * 0.3; }
+      p.size += p.grow * dt;
+    }
+  }
+  function gatherParticles() {
+    nAdd = 0; nAlpha = 0;
+    for (const p of parts) {
+      const f = p.life / p.max;
+      let r = p.col[0], g = p.col[1], b = p.col[2], a = p.a;
+      if (p.lit) {
+        const v = Light.sample(p.x, p.y), k = 0.7 / 128;
+        r *= (v & 255) * k + 0.05; g *= ((v >> 8) & 255) * k + 0.05; b *= ((v >> 16) & 255) * k + 0.05;
+      }
+      let arr, o;
+      if (p.kind < 2) { arr = partAdd; o = nAdd++ * P_F; a *= p.kind === 1 ? Math.min(1, f * 2) : f; }
+      else {
+        arr = partAlpha; o = nAlpha++ * P_F;
+        a *= p.kind === 2 ? Math.min(1, (1 - f) * 6) * f : Math.min(1, p.life * 2);
+      }
+      arr[o] = p.x; arr[o + 1] = p.y; arr[o + 2] = p.z; arr[o + 3] = p.size;
+      arr[o + 4] = r; arr[o + 5] = g; arr[o + 6] = b; arr[o + 7] = a;
+      arr[o + 8] = p.vx; arr[o + 9] = p.vy; arr[o + 10] = p.vz; arr[o + 11] = p.kind;
+    }
+  }
+  function drawParticles(additiveOnly, mirror) {
+    const groups = additiveOnly ? [[partAdd, nAdd, true]] : [[partAlpha, nAlpha, false], [partAdd, nAdd, true]];
+    if (!nAdd && (additiveOnly || !nAlpha)) return;
+    gl.useProgram(progPart.p);
+    const u = progPart.u;
+    gl.uniformMatrix4fv(u.uVP, false, VP);
+    gl.uniform2f(u.uJitter, mirror ? 0 : frameJitter[0], mirror ? 0 : frameJitter[1]);
+    gl.uniform1f(u.uMirror, mirror ? -1 : 1);
+    gl.uniform3fv(u.uEye, cam.e); gl.uniform3fv(u.uR3, cam.r); gl.uniform3fv(u.uU3, cam.u);
+    gl.uniform1f(u.uRaw, mirror || hdr ? 1 : 0);
+    gl.uniform1f(u.uExposure, exposure);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    gl.bindVertexArray(partVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, partInst);
+    for (const [arr, n, add] of groups) {
+      if (!n) continue;
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, arr.subarray(0, n * P_F));
+      if (add) gl.blendFunc(gl.ONE, gl.ONE); else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, n);
+    }
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+  }
+
+  function initObjects() {
+    const quadBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+    const vao = (inst, attrs, stride) => {
+      const v = gl.createVertexArray();
+      gl.bindVertexArray(v);
+      gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+      for (const [loc, off] of attrs) {
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, stride * 4, off * 4);
+        gl.vertexAttribDivisor(loc, 1);
+      }
+      gl.bindVertexArray(null);
+      return v;
+    };
+    shadowInst = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, shadowInst);
+    gl.bufferData(gl.ARRAY_BUFFER, shData.byteLength, gl.DYNAMIC_DRAW);
+    shadowVAO = vao(shadowInst, [[1, 0]], 4);
+    partInst = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, partInst);
+    gl.bufferData(gl.ARRAY_BUFFER, partAdd.byteLength, gl.DYNAMIC_DRAW);
+    partVAO = vao(partInst, [[1, 0], [2, 4], [3, 8]], P_F);
+    progShadow = compile(SHADOW_VS, SHADOW_FS);
+    progPart = compile(PART_VS, PART_FS);
   }
 
   /* --------------------------------------------------------------- frame */
@@ -721,6 +1252,7 @@ const GLR = (() => {
     setCommon(progSprite, L, mirror);
     gl.uniform2f(progSprite.u.uRight, cam.r[0], cam.r[1]);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texSprites); gl.uniform1i(progSprite.u.uTex, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texSprNrm); gl.uniform1i(progSprite.u.uNrmS, 1);
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(spriteVAO);
     gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, sprN);
@@ -739,7 +1271,12 @@ const GLR = (() => {
     exposure = 0.8 + (P.flashT > 0 ? 0.08 : 0);
     buildDoors(L, P);
     updateCells(L, false);
+    warmUp(L, f.warmBudget || 4);
     gatherLights(L, P, f.inv);
+    gatherProps(L);
+    gatherShadows(L);
+    stepParticles(L, f.dt || 0);
+    gatherParticles();
     sprN = 0;
     f.collect(addSprite);
     if (sprN) {
@@ -763,7 +1300,9 @@ const GLR = (() => {
       gl.viewport(0, 0, rw, rh);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       drawWorld(L, f.anim, true);
+      drawProps(L, true);
       drawSprites(L, true);
+      drawParticles(true, true);
       gl.bindTexture(gl.TEXTURE_2D, reflTex);
       gl.generateMipmap(gl.TEXTURE_2D);
     }
@@ -772,7 +1311,10 @@ const GLR = (() => {
     gl.viewport(0, 0, bw, bh);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     drawWorld(L, f.anim, false);
+    drawProps(L, false);
+    drawShadows();
     drawSprites(L, false);
+    drawParticles(false, false);
     gl.bindVertexArray(null);
     if (hdr) post(L, P);
   }
@@ -1174,6 +1716,11 @@ const GLR = (() => {
       texSprites = newArray(SPR_CAP, gl.SRGB8_ALPHA8);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      texSprNrm = newArray(SPR_CAP, gl.RGBA8, NTS);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      buildProps();
+      initObjects();
       texLightA = gl.createTexture(); texLightB = gl.createTexture(); texCells = gl.createTexture();
       texBlack = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, texBlack);
@@ -1208,6 +1755,12 @@ const GLR = (() => {
 
   return {
     init, render, layout, degrade,
+    // particle events from the game (only while the GPU renderer is in use)
+    fx(kind, x, y, z, scale) { if (ok) fx(kind, x, y, z, scale); },
+    kill(e) { if (ok) kill(e); },
+    shot(cur, P) { if (ok) shot(cur, P); },
+    // finishes the background work at once (automated tests)
+    flushWarm() { if (curL) warmUp(curL, 1e9); },
     get ok() { return ok; },
     get hdr() { return hdr; },
     get canvas() { return cv; },
