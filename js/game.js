@@ -145,7 +145,8 @@ function resize() {
   view.width = Math.round(cw * dpr);
   view.height = Math.round(ch * dpr);
   K = view.width / W;
-  vignette.style.display = style === 'retro' ? 'none' : '';
+  // the GPU renderer draws its own vignette
+  vignette.style.display = style === 'retro' || (useGL && GLR.hdr) ? 'none' : '';
   // the vignette is a CSS layer over the 3D view: composited by the browser for free
   const vg = view.getBoundingClientRect();
   Object.assign(vignette.style, { left: vg.left + 'px', top: vg.top + 'px', width: cw + 'px', height: (ch * VH / H) + 'px' });

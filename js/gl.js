@@ -21,6 +21,13 @@
  * - planar reflections on the raised floor: the scene is drawn mirrored under
  *   the floor at half resolution, then blurred by mipmaps according to gloss.
  *
+ * Post-processing: the frame is rendered in HDR (half floats) with 4x MSAA,
+ * then: screen-space ambient occlusion, volumetric haze (lit by the lightmap,
+ * light shafts under the ceiling panels, glow around dynamic lights), a
+ * multi-level bloom, ACES tone mapping, a color grade per episode, vignette,
+ * slight chromatic aberration, film grain and dithering. Without float render
+ * targets, the frame is tone mapped directly instead.
+ *
  * The game logic stays in game.js; this module only draws a frame from the
  * level state. If WebGL2 is missing, game.js keeps the software renderer.
  */
@@ -76,6 +83,7 @@ const GLR = (() => {
   uniform float uEmissive;
   uniform float uExposure;
   uniform float uMirror;
+  uniform float uRaw;            // 1: linear HDR output (post-processing follows)
   uniform vec4 uDL[${MAX_DL}];   // dynamic lights: position, radius
   uniform vec4 uDC[${MAX_DL}];   // color x strength
   uniform int uDN;
@@ -189,7 +197,7 @@ const GLR = (() => {
     // emissive texels (LEDs, screens, light panels) are stored in alpha
     c = mix(c, t.rgb * uEmissive, t.a);
     c = fogged(c, vPos);
-    oColor = vec4(uMirror < 0.0 ? c : tonemap(c), 1.0);
+    oColor = vec4(uRaw > 0.5 ? c : tonemap(c), 1.0);
   }`;
 
   const SPRITE_VS = `#version 300 es
@@ -232,7 +240,7 @@ const GLR = (() => {
       if ((fl & 1) != 0) c = mix(c, vec3(1.6), 0.5);
       c = fogged(c, vPos);
     }
-    oColor = vec4(uMirror < 0.0 ? c : tonemap(c), t.a);
+    oColor = vec4(uRaw > 0.5 ? c : tonemap(c), t.a);
   }`;
 
   function compile(vs, fs) {
@@ -633,7 +641,7 @@ const GLR = (() => {
   // View-projection matrix (column-major) for an eye at e, yaw a, pitch p.
   // World: x east, y south, z up; the floor is z = 0 and the ceiling z = 1.
   const VP = new Float32Array(16);
-  const cam = { e: [0, 0, 0], f: [1, 0, 0], r: [0, 1, 0] };
+  const cam = { e: [0, 0, 0], f: [1, 0, 0], r: [0, 1, 0], u: [0, 0, 1] };
   function camera(ex, ey, ez, a, p) {
     const ca = Math.cos(a), sa = Math.sin(a), cp = Math.cos(p), sp = Math.sin(p);
     const f = [ca * cp, sa * cp, sp], r = [-sa, ca, 0], u = [-ca * sp, -sa * sp, cp];
@@ -648,7 +656,7 @@ const GLR = (() => {
       [f[0], f[1], f[2], -dot(f)],
     ];
     for (let c = 0; c < 4; c++) for (let rr = 0; rr < 4; rr++) VP[c * 4 + rr] = row[rr][c];
-    cam.e = e; cam.f = f; cam.r = r;
+    cam.e = e; cam.f = f; cam.r = r; cam.u = u;
   }
 
   /* ------------------------------------------------------------- sprites */
@@ -675,6 +683,7 @@ const GLR = (() => {
     gl.uniformMatrix4fv(u.uVP, false, VP);
     gl.uniform2f(u.uJitter, mirror ? 0 : frameJitter[0], mirror ? 0 : frameJitter[1]);
     gl.uniform1f(u.uMirror, mirror ? -1 : 1);
+    gl.uniform1f(u.uRaw, mirror || hdr ? 1 : 0);
     gl.uniform3f(u.uEye, cam.e[0], cam.e[1], mirror ? -cam.e[2] : cam.e[2]);
     gl.uniform3f(u.uFwd, cam.f[0], cam.f[1], cam.f[2]);
     gl.uniform2f(u.uMapSize, L.w, L.h);
@@ -727,7 +736,7 @@ const GLR = (() => {
     const bob = Math.sin(P.bobPhase * 2) * 0.012 * P.bobAmt;
     camera(P.x, P.y, 0.5 + bob, P.a, P.pitch || 0);
     frameJitter = [f.shakeX * 2, -f.shakeY * 2];
-    exposure = 0.9 + (P.flashT > 0 ? 0.08 : 0);
+    exposure = 0.8 + (P.flashT > 0 ? 0.08 : 0);
     buildDoors(L, P);
     updateCells(L, false);
     gatherLights(L, P, f.inv);
@@ -759,12 +768,351 @@ const GLR = (() => {
       gl.generateMipmap(gl.TEXTURE_2D);
     }
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, hdr ? msFBO : null);
     gl.viewport(0, 0, bw, bh);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     drawWorld(L, f.anim, false);
     drawSprites(L, false);
     gl.bindVertexArray(null);
+    if (hdr) post(L, P);
+  }
+
+  /* ----------------------------------------------------- post-processing */
+  const QUAD_VS = `#version 300 es
+  out vec2 vUv;
+  void main() {
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    vUv = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+  }`;
+
+  const POST_COMMON = `#version 300 es
+  precision highp float;
+  in vec2 vUv;
+  out vec4 oColor;
+  uniform vec2 uNF;       // near, far
+  uniform vec2 uTan;      // tangents of the half fields of view
+  float linZ(float d) { float z = d * 2.0 - 1.0; return 2.0 * uNF.x * uNF.y / (uNF.y + uNF.x - z * (uNF.y - uNF.x)); }
+  float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+  `;
+
+  // Ambient occlusion from the depth buffer (half resolution, view space).
+  const SSAO_FS = POST_COMMON + `
+  uniform sampler2D uDepth;
+  uniform vec2 uPx;       // depth texel size
+  vec3 vpos(vec2 uv) { float z = linZ(textureLod(uDepth, uv, 0.0).r); return vec3((uv * 2.0 - 1.0) * uTan * z, z); }
+  void main() {
+    vec3 P = vpos(vUv);
+    if (P.z > 40.0) { oColor = vec4(1.0); return; }
+    vec3 px = vpos(vUv + vec2(uPx.x, 0.0)) - P, nx = P - vpos(vUv - vec2(uPx.x, 0.0));
+    vec3 py = vpos(vUv + vec2(0.0, uPx.y)) - P, ny = P - vpos(vUv - vec2(0.0, uPx.y));
+    vec3 dx = dot(px, px) < dot(nx, nx) ? px : nx, dy = dot(py, py) < dot(ny, ny) ? py : ny;
+    vec3 N = normalize(cross(dx, dy));
+    if (dot(N, P) > 0.0) N = -N;
+    const float R = 0.32;
+    vec2 rad = R / (P.z * uTan) * 0.5;
+    float a0 = ign(gl_FragCoord.xy) * 6.2831, occ = 0.0;
+    for (int i = 0; i < 12; i++) {
+      float f = (float(i) + 0.5) / 12.0;
+      float a = a0 + float(i) * 2.39996;
+      vec2 o = vec2(cos(a), sin(a)) * rad * sqrt(f);
+      vec3 v = vpos(vUv + o) - P;
+      float vv = dot(v, v);
+      occ += max(0.0, dot(v, N) * inversesqrt(vv + 1e-6) - 0.15) * smoothstep(R * R * 4.0, R * R, vv);
+    }
+    oColor = vec4(vec3(clamp(1.0 - occ / 12.0 * 1.7, 0.0, 1.0)), 1.0);
+  }`;
+
+  // Depth-aware 4x4 blur of the occlusion.
+  const AOBLUR_FS = POST_COMMON + `
+  uniform sampler2D uAO, uDepth;
+  uniform vec2 uPx;
+  void main() {
+    float z0 = linZ(textureLod(uDepth, vUv, 0.0).r), s = 0.0, w = 0.0;
+    for (int y = -2; y < 2; y++) for (int x = -2; x < 2; x++) {
+      vec2 uv = vUv + (vec2(x, y) + 0.5) * uPx;
+      float z = linZ(textureLod(uDepth, uv, 0.0).r);
+      float k = 1.0 / (0.02 + abs(z - z0) * 8.0 / z0);
+      s += textureLod(uAO, uv, 0.0).r * k; w += k;
+    }
+    oColor = vec4(vec3(s / w), 1.0);
+  }`;
+
+  // Volumetric haze along each view ray: lightmap in-scattering, shafts under the
+  // light panels, glow of the dynamic lights.
+  const VOL_FS = POST_COMMON + `
+  uniform sampler2D uDepth, uLightA, uCells;
+  uniform vec2 uMapSize;
+  uniform vec3 uEye, uF, uR, uU, uLamp, uAmbient;
+  uniform float uDensity;
+  uniform vec4 uDL[${MAX_DL}];
+  uniform vec4 uDC[${MAX_DL}];
+  uniform int uDN;
+  void main() {
+    float z = linZ(textureLod(uDepth, vUv, 0.0).r);
+    vec2 s = (vUv * 2.0 - 1.0) * uTan;
+    vec3 d = uF + uR * s.x + uU * s.y;
+    float tEnd = min(z * length(d), 26.0);
+    d = normalize(d);
+    const int STEPS = 14;
+    float dt = tEnd / float(STEPS), t = dt * ign(gl_FragCoord.xy);
+    vec3 acc = vec3(0.0);
+    ivec2 ms = ivec2(uMapSize) - 1;
+    for (int i = 0; i < STEPS; i++, t += dt) {
+      vec3 p = uEye + d * t;
+      vec3 l = texture(uLightA, p.xy / uMapSize).rgb * 0.22 + uAmbient * 0.05;
+      ivec2 c = clamp(ivec2(floor(p.xy)), ivec2(0), ms);
+      vec4 cell = texelFetch(uCells, c, 0);
+      if (cell.r < 0.5 && abs(cell.g * 255.0 - 1.0) < 0.5) {
+        float r = length(fract(p.xy) - 0.5), cone = 0.2 + (0.98 - p.z) * 0.42;
+        l += uLamp * smoothstep(cone, cone * 0.45, r) * smoothstep(0.0, 0.5, p.z) * 1.6;
+      }
+      for (int k = 0; k < 8; k++) {
+        if (k >= uDN) break;
+        vec3 q = uDL[k].xyz - p;
+        float rr = uDL[k].w, dd = dot(q, q);
+        l += uDC[k].rgb * max(0.0, 1.0 - dd / (rr * rr)) * 0.5 / (1.0 + dd * 3.0);
+      }
+      acc += l * exp(-t * 0.05);
+    }
+    oColor = vec4(acc * dt * uDensity, 1.0);
+  }`;
+
+  // Bloom: soft-threshold bright pass, then dual-filter down and up sampling.
+  const PREFILTER_FS = POST_COMMON + `
+  uniform sampler2D uSrc;
+  uniform vec2 uPx;
+  uniform float uThreshold;
+  void main() {
+    vec3 c = (texture(uSrc, vUv + uPx * vec2(-0.5, -0.5)).rgb + texture(uSrc, vUv + uPx * vec2(0.5, -0.5)).rgb +
+              texture(uSrc, vUv + uPx * vec2(-0.5, 0.5)).rgb + texture(uSrc, vUv + uPx * vec2(0.5, 0.5)).rgb) * 0.25;
+    c = min(c, vec3(40.0));
+    float b = max(c.r, max(c.g, c.b));
+    float knee = uThreshold * 0.5, soft = clamp(b - uThreshold + knee, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee + 1e-4);
+    oColor = vec4(c * max(soft, b - uThreshold) / max(b, 1e-4), 1.0);
+  }`;
+  const DOWN_FS = POST_COMMON + `
+  uniform sampler2D uSrc;
+  uniform vec2 uPx;
+  void main() {
+    vec3 c = texture(uSrc, vUv).rgb * 4.0;
+    c += texture(uSrc, vUv - uPx).rgb + texture(uSrc, vUv + uPx).rgb;
+    c += texture(uSrc, vUv + vec2(uPx.x, -uPx.y)).rgb + texture(uSrc, vUv - vec2(uPx.x, -uPx.y)).rgb;
+    oColor = vec4(c / 8.0, 1.0);
+  }`;
+  const UP_FS = POST_COMMON + `
+  uniform sampler2D uSrc;
+  uniform vec2 uPx;
+  void main() {
+    vec3 c = texture(uSrc, vUv + vec2(-uPx.x * 2.0, 0.0)).rgb + texture(uSrc, vUv + vec2(uPx.x * 2.0, 0.0)).rgb;
+    c += texture(uSrc, vUv + vec2(0.0, -uPx.y * 2.0)).rgb + texture(uSrc, vUv + vec2(0.0, uPx.y * 2.0)).rgb;
+    c += (texture(uSrc, vUv + vec2(-uPx.x, uPx.y)).rgb + texture(uSrc, vUv + uPx).rgb +
+          texture(uSrc, vUv - uPx).rgb + texture(uSrc, vUv + vec2(uPx.x, -uPx.y)).rgb) * 2.0;
+    oColor = vec4(c / 12.0, 1.0);
+  }`;
+
+  // Final image: occlusion, haze, bloom, exposure, ACES, grade, lens effects.
+  const COMPOSITE_FS = POST_COMMON + `
+  uniform sampler2D uScene, uBloom, uAO, uVol;
+  uniform float uExposure, uBloomK, uAOK, uVolK, uTime, uHurt, uVig, uSat, uCA;
+  uniform vec3 uLift, uGain;
+  float hash(float n) { return fract(sin(n) * 43758.5453); }
+  vec3 aces(vec3 c) { return clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0); }
+  void main() {
+    vec2 uv = vUv;
+    if (uHurt > 0.15) {
+      // damage glitch: a few rows slide sideways
+      float band = floor(uv.y * 48.0), tt = floor(uTime * 24.0);
+      if (hash(band * 7.13 + tt) > 0.82) uv.x += (hash(band + tt * 3.1) - 0.5) * 0.06 * uHurt;
+    }
+    vec2 dc = uv - 0.5;
+    float r2 = dot(dc, dc);
+    vec2 ca = dc * r2 * uCA;
+    vec3 c = vec3(texture(uScene, uv - ca).r, texture(uScene, uv).g, texture(uScene, uv + ca).b);
+    float ao = texture(uAO, uv).r;
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c *= mix(1.0, ao, uAOK * (1.0 - smoothstep(1.0, 3.0, lum)));
+    c += texture(uVol, uv).rgb * uVolK;
+    c += texture(uBloom, uv).rgb * uBloomK;
+    c = aces(c * uExposure);
+    c = c * uGain + uLift * (1.0 - c);
+    float g = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = max(mix(vec3(g), c, uSat), 0.0);
+    c *= 1.0 - uVig * smoothstep(0.1, 0.55, r2 * 1.6);
+    c = pow(c, vec3(1.0 / 2.2));
+    c += (ign(gl_FragCoord.xy + fract(uTime * 7.0) * 113.0) - 0.5) * (2.0 / 255.0);
+    c += (hash(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + uTime) - 0.5) * 0.012;
+    oColor = vec4(c, 1.0);
+  }`;
+
+  // Per episode: haze density, grade gain and lift, saturation.
+  const GRADES = [
+    { dens: 0.8, gain: [1.0, 1.0, 1.03], lift: [0.0, 0.004, 0.012], sat: 1.06 },   // clean rooms
+    { dens: 1.25, gain: [0.95, 1.0, 1.08], lift: [0.0, 0.012, 0.028], sat: 1.0 },  // cooling zone
+    { dens: 1.0, gain: [0.97, 1.04, 0.97], lift: [0.0, 0.014, 0.006], sat: 1.05 }, // network core
+    { dens: 1.1, gain: [1.07, 0.98, 0.92], lift: [0.014, 0.0, 0.022], sat: 1.0 },  // cold archives
+    { dens: 1.4, gain: [1.06, 1.0, 0.9], lift: [0.018, 0.01, 0.0], sat: 1.1 },     // hyperscale
+  ];
+
+  let hdr = false, samples = 0;
+  let progSSAO, progAOBlur, progVol, progPre, progDown, progUp, progComp, quadVAO;
+  let msFBO = null, msColor = null, msDepth = null, resFBO = null, sceneTex = null, depthTex = null;
+  let aoTex = null, aoFBO = null, ao2Tex = null, ao2FBO = null, volTex = null, volFBO = null;
+  let bloom = [];      // [{tex, fbo, w, h}]
+  let texWhite = null;
+
+  function target(w, h, fmt, filter) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, fmt, w, h);
+    tex2D(tex, filter, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return { tex, fbo, w, h };
+  }
+
+  let postGarbage = [];
+  function resizePost() {
+    for (const [kind, o] of postGarbage) gl['delete' + kind](o);
+    postGarbage = [];
+    const keep = (kind, o) => { postGarbage.push([kind, o]); return o; };
+    // multisampled HDR scene + depth, resolved into textures
+    msFBO = keep('Framebuffer', gl.createFramebuffer());
+    gl.bindFramebuffer(gl.FRAMEBUFFER, msFBO);
+    msColor = keep('Renderbuffer', gl.createRenderbuffer());
+    gl.bindRenderbuffer(gl.RENDERBUFFER, msColor);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA16F, bw, bh);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, msColor);
+    msDepth = keep('Renderbuffer', gl.createRenderbuffer());
+    gl.bindRenderbuffer(gl.RENDERBUFFER, msDepth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, bw, bh);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, msDepth);
+    const sc = target(bw, bh, gl.RGBA16F, gl.LINEAR);
+    sceneTex = keep('Texture', sc.tex); resFBO = keep('Framebuffer', sc.fbo);
+    depthTex = keep('Texture', gl.createTexture());
+    gl.bindTexture(gl.TEXTURE_2D, depthTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, bw, bh);
+    tex2D(depthTex, gl.NEAREST, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, resFBO);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTex, 0);
+    // half-resolution effects
+    const hw = Math.max(1, bw >> 1), hh = Math.max(1, bh >> 1);
+    let t = target(hw, hh, gl.RGBA8, gl.LINEAR); aoTex = keep('Texture', t.tex); aoFBO = keep('Framebuffer', t.fbo);
+    t = target(hw, hh, gl.RGBA8, gl.LINEAR); ao2Tex = keep('Texture', t.tex); ao2FBO = keep('Framebuffer', t.fbo);
+    t = target(hw, hh, gl.RGBA16F, gl.LINEAR); volTex = keep('Texture', t.tex); volFBO = keep('Framebuffer', t.fbo);
+    bloom = [];
+    let w = hw, h = hh;
+    for (let i = 0; i < 6 && w >= 4 && h >= 4; i++) {
+      t = target(w, h, gl.RGBA16F, gl.LINEAR);
+      keep('Texture', t.tex); keep('Framebuffer', t.fbo);
+      bloom.push(t);
+      w >>= 1; h >>= 1;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  function pass(pr, fbo, w, h) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(pr.p);
+    gl.uniform2f(pr.u.uNF, NEAR, FAR);
+    gl.uniform2f(pr.u.uTan, TAN_H, TAN_H * bh / bw);
+    return pr.u;
+  }
+  function bindTex(u, name, unit, tex) {
+    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(u[name], unit);
+  }
+  const quad = () => { gl.bindVertexArray(quadVAO); gl.drawArrays(gl.TRIANGLES, 0, 3); };
+
+  function post(L, P) {
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+    // resolve MSAA
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msFBO);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, resFBO);
+    gl.blitFramebuffer(0, 0, bw, bh, 0, 0, bw, bh, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.blitFramebuffer(0, 0, bw, bh, 0, 0, bw, bh, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    const hw = Math.max(1, bw >> 1), hh = Math.max(1, bh >> 1);
+    const high = Light.high, gr = GRADES[L.def.episode % GRADES.length];
+    let u;
+    if (high) {
+      u = pass(progSSAO, aoFBO, hw, hh);
+      gl.uniform2f(u.uPx, 2 / bw, 2 / bh);
+      bindTex(u, 'uDepth', 0, depthTex);
+      quad();
+      u = pass(progAOBlur, ao2FBO, hw, hh);
+      gl.uniform2f(u.uPx, 1 / hw, 1 / hh);
+      bindTex(u, 'uAO', 0, aoTex); bindTex(u, 'uDepth', 1, depthTex);
+      quad();
+      u = pass(progVol, volFBO, hw, hh);
+      bindTex(u, 'uDepth', 0, depthTex); bindTex(u, 'uLightA', 1, texLightA); bindTex(u, 'uCells', 2, texCells);
+      gl.uniform2f(u.uMapSize, L.w, L.h);
+      gl.uniform3f(u.uEye, cam.e[0], cam.e[1], cam.e[2]);
+      gl.uniform3fv(u.uF, cam.f); gl.uniform3fv(u.uR, cam.r); gl.uniform3fv(u.uU, cam.u);
+      const mood = LIGHT_MOODS[L.def.episode % LIGHT_MOODS.length];
+      gl.uniform3fv(u.uLamp, mood.lamp);
+      gl.uniform3f(u.uAmbient, ambient[0], ambient[1], ambient[2]);
+      gl.uniform1f(u.uDensity, 0.02 * gr.dens);
+      gl.uniform1i(u.uDN, dlN);
+      if (dlN) { gl.uniform4fv(u.uDL, DL); gl.uniform4fv(u.uDC, DC); }
+      quad();
+    }
+    // bloom chain
+    u = pass(progPre, bloom[0].fbo, bloom[0].w, bloom[0].h);
+    gl.uniform2f(u.uPx, 1 / bw, 1 / bh);
+    gl.uniform1f(u.uThreshold, 1.0);
+    bindTex(u, 'uSrc', 0, sceneTex);
+    quad();
+    for (let i = 1; i < bloom.length; i++) {
+      u = pass(progDown, bloom[i].fbo, bloom[i].w, bloom[i].h);
+      gl.uniform2f(u.uPx, 1 / bloom[i - 1].w, 1 / bloom[i - 1].h);
+      bindTex(u, 'uSrc', 0, bloom[i - 1].tex);
+      quad();
+    }
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    for (let i = bloom.length - 1; i > 0; i--) {
+      u = pass(progUp, bloom[i - 1].fbo, bloom[i - 1].w, bloom[i - 1].h);
+      gl.uniform2f(u.uPx, 1 / bloom[i].w, 1 / bloom[i].h);
+      bindTex(u, 'uSrc', 0, bloom[i].tex);
+      quad();
+    }
+    gl.disable(gl.BLEND);
+    // composite to the canvas
+    u = pass(progComp, null, bw, bh);
+    bindTex(u, 'uScene', 0, sceneTex); bindTex(u, 'uBloom', 1, bloom[0].tex);
+    bindTex(u, 'uAO', 2, high ? ao2Tex : texWhite); bindTex(u, 'uVol', 3, high ? volTex : texBlack);
+    gl.uniform1f(u.uExposure, exposure);
+    gl.uniform1f(u.uBloomK, high ? 0.09 : 0.06);
+    gl.uniform1f(u.uAOK, high ? 0.85 : 0);
+    gl.uniform1f(u.uVolK, high ? 1 : 0);
+    gl.uniform1f(u.uTime, performance.now() / 1000 % 1000);
+    gl.uniform1f(u.uHurt, P.hurtT > 0 ? P.hurtT : 0);
+    gl.uniform1f(u.uVig, high ? 0.42 : 0.3);
+    gl.uniform1f(u.uCA, high ? 0.012 : 0);
+    gl.uniform1f(u.uSat, gr.sat);
+    gl.uniform3fv(u.uGain, gr.gain); gl.uniform3fv(u.uLift, gr.lift);
+    quad();
+    gl.bindVertexArray(null);
+  }
+
+  function initPost() {
+    if (!floatOK) return;
+    samples = Math.min(4, gl.getParameter(gl.MAX_SAMPLES));
+    progSSAO = compile(QUAD_VS, SSAO_FS);
+    progAOBlur = compile(QUAD_VS, AOBLUR_FS);
+    progVol = compile(QUAD_VS, VOL_FS);
+    progPre = compile(QUAD_VS, PREFILTER_FS);
+    progDown = compile(QUAD_VS, DOWN_FS);
+    progUp = compile(QUAD_VS, UP_FS);
+    progComp = compile(QUAD_VS, COMPOSITE_FS);
+    quadVAO = gl.createVertexArray();
+    texWhite = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texWhite);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    tex2D(texWhite, gl.NEAREST, gl.CLAMP_TO_EDGE);
+    hdr = true;
   }
 
   /* -------------------------------------------------------------- set up */
@@ -788,6 +1136,7 @@ const GLR = (() => {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, reflTex, 0);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, reflDepth);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (hdr) resizePost();
   }
 
   let userScale = 1, lay = null;
@@ -814,12 +1163,13 @@ const GLR = (() => {
     if (ok) return true;
     try {
       cv = canvas;
-      gl = cv.getContext('webgl2', { antialias: true, alpha: false, depth: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
+      gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: true, premultipliedAlpha: false, powerPreference: 'high-performance' });
       if (!gl) return false;
       aniso = gl.getExtension('EXT_texture_filter_anisotropic');
       floatOK = !!gl.getExtension('EXT_color_buffer_float');
       progWorld = compile(WORLD_VS, WORLD_FS);
       progSprite = compile(SPRITE_VS, SPRITE_FS);
+      initPost();
       buildWallArray();
       texSprites = newArray(SPR_CAP, gl.SRGB8_ALPHA8);
       gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -859,6 +1209,7 @@ const GLR = (() => {
   return {
     init, render, layout, degrade,
     get ok() { return ok; },
+    get hdr() { return hdr; },
     get canvas() { return cv; },
     onLost: null,
   };
