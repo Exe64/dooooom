@@ -308,11 +308,11 @@ function drawCeiling(kind) {
 // Draws a sprite in the 64x64 design space onto a SPR_HI canvas (MODERN), with a
 // TEX x TEX copy in `lo` for RETRO. outline: thin dark outline so it reads against walls.
 // keep: also return the canvas (used to derive the death frames).
-function makeSprite(draw, outline = false, keep = false) {
-  const c = newCanvas(SPR_HI, SPR_HI);
+function makeSprite(draw, outline = false, keep = false, size = SPR_HI) {
+  const c = newCanvas(size, size);
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
-  g.scale(STS, STS);
+  g.scale(size / 64, size / 64);
   draw(g);
   const spr = spriteFromCanvas(c, outline);
   if (keep) spr.canvas = c;
@@ -355,7 +355,19 @@ function ell(g, x, y, rx, ry, col) { g.fillStyle = col; g.beginPath(); g.ellipse
 function ln(g, x0, y0, x1, y1, col, w) { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); }
 
 // Bug: neon-green glitch insect
-function drawBug(g, phase, atk) {
+// Enemy draw functions take (g, phase, atk, v, dir): v is the RETRO rotation view
+// (0 front, 1 front three-quarter, 2 profile, 3 back three-quarter, 4 back) and dir
+// the side it turns to (+1 right, -1 left). See rotSprite().
+const FACE_SHIFT = [0, 5, 11, 0, 0];
+// Eyes of a creature seen from view v: both from the front, the near one in profile, none from behind.
+function eyes(v, dir, xl, xr, draw) {
+  if (v >= 3) return;
+  if (v !== 2 || dir < 0) draw(xl);
+  if (v !== 2 || dir > 0) draw(xr);
+}
+
+function drawBug(g, phase, atk, v = 0, dir = 1) {
+  const f = FACE_SHIFT[v] * dir, back = v >= 3;
   for (let i = 0; i < 3; i++) {
     const y = 44 + i * 5, o = ((i + phase) % 2 ? 3 : -3);
     ln(g, 20, y, 5, y + 10 + o, '#1b4d21', 3);
@@ -366,21 +378,27 @@ function drawBug(g, phase, atk) {
   g.strokeStyle = '#b6ffbf'; g.lineWidth = 1;
   g.beginPath(); g.moveTo(22, 47); g.lineTo(28, 47); g.lineTo(28, 52); g.lineTo(36, 52); g.moveTo(40, 42); g.lineTo(40, 48); g.lineTo(44, 48); g.stroke();
   g.fillStyle = '#b6ffbf'; g.fillRect(27, 51, 2, 2); g.fillRect(39, 41, 2, 2);
-  ell(g, 32, 32, 12, 10, '#23702b');
+  if (back) {
+    // wing cases seen from behind
+    ell(g, 26, 44, 9, 12, '#2c9a37'); ell(g, 38, 44, 9, 12, '#2c9a37');
+    ln(g, 32, 33, 32, 58, '#0f2e13', 1.5);
+  }
+  ell(g, 32 + f * 0.5, 32, 12, 10, '#23702b');
   // glitch
   g.fillStyle = '#ff00ff'; g.fillRect(16, 38 + phase * 3, 6, 2);
   g.fillStyle = '#00ffff'; g.fillRect(42, 50 - phase * 2, 5, 2);
-  ell(g, 27, 30, 3, 3, '#ff2a2a'); ell(g, 37, 30, 3, 3, '#ff2a2a');
-  g.fillStyle = '#ffd0d0'; g.fillRect(26, 29, 1, 1); g.fillRect(36, 29, 1, 1);
+  eyes(v, dir, 27 + f, 37 + f, (x) => { ell(g, x, 30, 3, 3, '#ff2a2a'); g.fillStyle = '#ffd0d0'; g.fillRect(x - 1, 29, 1, 1); });
   const m = atk ? 7 : 2;
-  ln(g, 28, 38, 24 - m, 44, '#0f2e13', 3); ln(g, 36, 38, 40 + m, 44, '#0f2e13', 3);
-  if (atk) ell(g, 32, 41, 4, 3, '#600');
-  ln(g, 28, 24, 20, 12 + phase * 2, '#23702b', 2); ln(g, 36, 24, 44, 12 - phase * 2, '#23702b', 2);
+  if (!back) {
+    ln(g, 28 + f, 38, 24 - m + f, 44, '#0f2e13', 3); ln(g, 36 + f, 38, 40 + m + f, 44, '#0f2e13', 3);
+    if (atk) ell(g, 32 + f, 41, 4, 3, '#600');
+  }
+  ln(g, 28 + f * 0.5, 24, 20 + f, 12 + phase * 2, '#23702b', 2); ln(g, 36 + f * 0.5, 24, 44 + f, 12 - phase * 2, '#23702b', 2);
 }
 
 // Viral drone: spiky sphere (virus-like) with a single eye
-function drawDrone(g, phase, atk) {
-  const cx = 32, cy = 30;
+function drawDrone(g, phase, atk, v = 0, dir = 1) {
+  const cx = 32, cy = 30, f = FACE_SHIFT[v] * dir;
   for (let i = 0; i < 12; i++) {
     const a = i / 12 * Math.PI * 2 + phase * 0.13;
     const x1 = cx + Math.cos(a) * 25, y1 = cy + Math.sin(a) * 25;
@@ -389,16 +407,24 @@ function drawDrone(g, phase, atk) {
   }
   ell(g, cx, cy, 18, 18, '#8d2468');
   ell(g, cx - 4, cy - 5, 11, 10, '#b3368a');
-  ell(g, cx, cy, 9, 9, '#f2f2f2');
-  ell(g, cx, cy, 5, 5, atk ? '#ffee00' : '#ff1a1a');
-  ell(g, cx, cy, 2, 2, '#000');
-  g.fillStyle = '#fff'; g.fillRect(cx - 4, cy - 5, 2, 2);
+  if (v < 3) {
+    const ex = cx + f, ew = v === 2 ? 5 : 9;
+    ell(g, ex, cy, ew, 9, '#f2f2f2');
+    ell(g, ex + (v ? dir : 0), cy, ew * 0.55, 5, atk ? '#ffee00' : '#ff1a1a');
+    ell(g, ex + (v ? dir * 2 : 0), cy, 2, 2, '#000');
+    g.fillStyle = '#fff'; g.fillRect(ex - 4, cy - 5, 2, 2);
+  } else {
+    // service hatch on its back
+    g.fillStyle = '#5a1544'; g.fillRect(cx - 7, cy - 6, 14, 12);
+    g.fillStyle = '#3a0d2c'; for (let y = cy - 4; y < cy + 5; y += 3) g.fillRect(cx - 5, y, 10, 1);
+  }
   // anti-grav thruster
   g.fillStyle = '#3cf'; g.fillRect(24, 52, 16, 2 + phase);
 }
 
 // BSOD bot: robot with a blue-screen monitor for a head
-function drawBot(g, phase, atk) {
+function drawBot(g, phase, atk, v = 0, dir = 1) {
+  const back = v >= 3;
   const lo = phase ? 3 : -3;
   // legs
   g.fillStyle = '#3c4148'; g.fillRect(22, 44, 7, 18 + lo); g.fillRect(35, 44, 7, 18 - lo);
@@ -406,17 +432,27 @@ function drawBot(g, phase, atk) {
   // torso (server tower)
   g.fillStyle = '#50565e'; g.fillRect(18, 24, 28, 22);
   g.fillStyle = '#6a717a'; g.fillRect(18, 24, 28, 2);
-  g.fillStyle = '#23262b'; for (let y = 29; y < 44; y += 3) g.fillRect(22, y, 12, 1);
-  g.fillStyle = '#3dff6a'; g.fillRect(38, 30, 2, 2); g.fillStyle = '#ffb52e'; g.fillRect(38, 34, 2, 2);
+  g.fillStyle = '#23262b'; for (let y = 29; y < 44; y += 3) g.fillRect(back ? 20 : 22, y, back ? 24 : 12, 1);
+  if (!back) { g.fillStyle = '#3dff6a'; g.fillRect(38, 30, 2, 2); g.fillStyle = '#ffb52e'; g.fillRect(38, 34, 2, 2); }
   // arms + gun
   g.fillStyle = '#3c4148'; g.fillRect(10, 26, 7, 16); g.fillRect(47, 26, 7, 12);
   g.fillStyle = '#222'; g.fillRect(44, 36, 16, 6); g.fillRect(52, 34, 4, 2);
   if (atk) { ell(g, 60, 39, 5, 5, '#ffee55'); ell(g, 60, 39, 2.5, 2.5, '#fff'); }
-  // BSOD monitor head
+  // BSOD monitor head (from behind: the casing and its vents)
   g.fillStyle = '#2b2f35'; g.fillRect(16, 2, 32, 22);
-  g.fillStyle = '#1a5fd0'; g.fillRect(18, 4, 28, 17);
-  g.fillStyle = '#fff'; g.font = 'bold 10px monospace'; g.fillText(':(', 21, 15);
-  g.fillRect(34, 8, 9, 1); g.fillRect(34, 11, 7, 1); g.fillRect(34, 14, 9, 1); g.fillRect(34, 17, 5, 1);
+  if (back) {
+    g.fillStyle = '#3a3f46'; g.fillRect(20, 5, 24, 15);
+    g.fillStyle = '#1b1e22'; for (let y = 7; y < 18; y += 3) g.fillRect(23, y, 18, 1.5);
+  } else if (v === 2) {
+    // profile: the thin edge of the monitor, the screen glowing on its side
+    g.fillStyle = '#1a5fd0'; g.fillRect(dir > 0 ? 44 : 16, 4, 4, 17);
+    g.fillStyle = '#3a3f46'; g.fillRect(dir > 0 ? 18 : 22, 5, 24, 15);
+  } else {
+    const o = v ? dir * 3 : 0;
+    g.fillStyle = '#1a5fd0'; g.fillRect(18 + o, 4, 28, 17);
+    g.fillStyle = '#fff'; g.font = 'bold 10px monospace'; g.fillText(':(', 21 + o, 15);
+    g.fillRect(34 + o, 8, 9, 1); g.fillRect(34 + o, 11, 7, 1); g.fillRect(34 + o, 14, 9, 1); g.fillRect(34 + o, 17, 5, 1);
+  }
   g.fillStyle = '#2b2f35'; g.fillRect(28, 21, 8, 4);
 }
 
@@ -429,15 +465,18 @@ const BOSS_PAL = {
   ransomware: { body: '#5a1414', light: '#7a1c1c', dark: '#2a0d0d', head: '#e8e0d0', eye: '#ff2020', shot: '#c04dff', glyph: ['$', '₿'] },
 };
 function drawBoss(pal) {
-  return (g, phase, atk) => {
-    const lo = phase ? 4 : -4;
+  return (g, phase, atk, v = 0, dir = 1) => {
+    const lo = phase ? 4 : -4, f = FACE_SHIFT[v] * dir * 0.7, back = v >= 3;
     g.fillStyle = pal.dark; g.fillRect(14, 46, 12, 18 + Math.min(0, lo)); g.fillRect(38, 46, 12, 18 - Math.max(0, lo));
     g.fillStyle = pal.body; g.fillRect(10, 26, 44, 24);
     g.fillStyle = pal.light; g.fillRect(10, 26, 44, 3);
-    // padlock
-    g.strokeStyle = '#e8c21a'; g.lineWidth = 3; g.beginPath(); g.arc(32, 35, 5, Math.PI, 0); g.stroke();
-    g.fillStyle = '#e8c21a'; g.fillRect(25, 35, 14, 11);
-    g.fillStyle = '#000'; g.fillRect(31, 38, 2, 5);
+    // padlock (a spine of armor plates from behind)
+    if (back) { g.fillStyle = pal.dark; for (let y = 28; y < 50; y += 5) g.fillRect(28, y, 8, 3); }
+    else {
+      g.strokeStyle = '#e8c21a'; g.lineWidth = 3; g.beginPath(); g.arc(32 + f, 35, 5, Math.PI, 0); g.stroke();
+      g.fillStyle = '#e8c21a'; g.fillRect(25 + f, 35, 14, 11);
+      g.fillStyle = '#000'; g.fillRect(31 + f, 38, 2, 5);
+    }
     // arm cannons
     g.fillStyle = pal.dark; g.fillRect(0, 28, 10, 20); g.fillRect(54, 28, 10, 20);
     g.fillStyle = '#111'; g.fillRect(1, 46, 8, 6); g.fillRect(55, 46, 8, 6);
@@ -445,16 +484,19 @@ function drawBoss(pal) {
     // skull
     ell(g, 32, 14, 16, 14, pal.head);
     g.fillStyle = pal.head; g.fillRect(22, 18, 20, 10);
-    ell(g, 25, 13, 5, 5, '#000'); ell(g, 39, 13, 5, 5, '#000');
-    ell(g, 25, 13, 2, 2, atk ? '#fff' : pal.eye); ell(g, 39, 13, 2, 2, atk ? '#fff' : pal.eye);
-    g.fillStyle = '#000'; g.beginPath(); g.moveTo(32, 17); g.lineTo(29, 22); g.lineTo(35, 22); g.fill();
-    for (let x = 23; x < 42; x += 3) g.fillRect(x, 24, 1, 4);
+    eyes(v, dir, 25 + f, 39 + f, (x) => { ell(g, x, 13, 5, 5, '#000'); ell(g, x, 13, 2, 2, atk ? '#fff' : pal.eye); });
+    if (back) { g.fillStyle = pal.light; g.fillRect(30, 4, 4, 22); }
+    else {
+      g.fillStyle = '#000'; g.beginPath(); g.moveTo(32 + f, 17); g.lineTo(29 + f, 22); g.lineTo(35 + f, 22); g.fill();
+      for (let x = 23; x < 42; x += 3) g.fillRect(x + f, 24, 1, 4);
+    }
     g.fillStyle = pal.eye; g.font = 'bold 7px monospace'; g.fillText(pal.glyph[0], 1, 8 + phase * 2); g.fillText(pal.glyph[1], 56, 10 - phase * 2);
   };
 }
 
 // Forum troll: big green brute holding a "FIRST!" sign
-function drawTroll(g, phase, atk) {
+function drawTroll(g, phase, atk, v = 0, dir = 1) {
+  const f = FACE_SHIFT[v] * dir, back = v >= 3;
   const lo = phase ? 3 : -3;
   g.fillStyle = '#3d5a2a'; g.fillRect(18, 46, 10, 18 + Math.min(0, lo)); g.fillRect(36, 46, 10, 18 - Math.max(0, lo));
   ell(g, 32, 38, 20, 16, '#5f8a3a');
@@ -467,36 +509,46 @@ function drawTroll(g, phase, atk) {
   g.fillStyle = '#2c3038'; g.fillRect(-4, -2, 8, 30);
   g.fillStyle = '#d9dde2'; for (let y = 0; y < 26; y += 4) g.fillRect(-3, y, 6, 2);
   g.restore();
-  // sign
+  // sign (its plywood back from behind)
   g.fillStyle = '#6b4a2a'; g.fillRect(6, 10, 2, 28);
-  g.fillStyle = '#f2f2e0'; g.fillRect(0, 6, 20, 11);
-  g.fillStyle = '#c21d1d'; g.font = 'bold 6px monospace'; g.fillText('FIRST!', 1, 14);
+  g.fillStyle = back ? '#8a6a3a' : '#f2f2e0'; g.fillRect(0, 6, 20, 11);
+  if (!back) { g.fillStyle = '#c21d1d'; g.font = 'bold 6px monospace'; g.fillText('FIRST!', 1, 14); }
   // head
-  ell(g, 32, 18, 12, 11, '#6f9a44');
-  ell(g, 26, 16, 3, 3, '#fff'); ell(g, 38, 16, 3, 3, '#fff');
-  g.fillStyle = '#c00'; g.fillRect(26, 16, 2, 2); g.fillRect(38, 16, 2, 2);
-  g.fillStyle = '#2a3a1a'; g.fillRect(24, 11, 6, 2); g.fillRect(35, 11, 6, 2);
-  g.fillStyle = '#2a1a0a'; g.fillRect(27, 23, 11, atk ? 5 : 2);
-  g.fillStyle = '#f2f2e0'; g.fillRect(28, 23, 2, 3); g.fillRect(35, 23, 2, 3);
-  ell(g, 20, 12, 3, 5, '#6f9a44'); ell(g, 44, 12, 3, 5, '#6f9a44');
+  ell(g, 32 + f * 0.4, 18, 12, 11, '#6f9a44');
+  eyes(v, dir, 26 + f, 38 + f, (x) => {
+    ell(g, x, 16, 3, 3, '#fff');
+    g.fillStyle = '#c00'; g.fillRect(x, 16, 2, 2);
+    g.fillStyle = '#2a3a1a'; g.fillRect(x - 2, 11, 6, 2);
+  });
+  if (back) { g.fillStyle = '#4a6a2a'; for (let x = 24; x < 41; x += 4) g.fillRect(x, 8, 2, 14); }
+  else {
+    g.fillStyle = '#2a1a0a'; g.fillRect(27 + f, 23, 11, atk ? 5 : 2);
+    g.fillStyle = '#f2f2e0'; g.fillRect(28 + f, 23, 2, 3); g.fillRect(35 + f, 23, 2, 3);
+  }
+  ell(g, 20 + f * 0.3, 12, 3, 5, '#6f9a44'); ell(g, 44 + f * 0.3, 12, 3, 5, '#6f9a44');
 }
 
 // Spammer: walking envelope spitting @ signs
-function drawSpammer(g, phase, atk) {
+function drawSpammer(g, phase, atk, v = 0, dir = 1) {
+  const f = FACE_SHIFT[v] * dir, back = v >= 3;
   const lo = phase ? 3 : -3;
   g.fillStyle = '#222'; g.fillRect(22, 48, 5, 16 + Math.min(0, lo)); g.fillRect(37, 48, 5, 16 - Math.max(0, lo));
   g.fillStyle = '#f2efe0'; g.fillRect(10, 18, 44, 32);
   g.strokeStyle = '#b8b0a0'; g.lineWidth = 2;
-  g.beginPath(); g.moveTo(10, 18); g.lineTo(32, 38); g.lineTo(54, 18); g.stroke();
-  g.fillStyle = '#c21d1d'; g.fillRect(40, 21, 10, 8);
-  g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('$', 43, 28);
+  if (back) {
+    // the back of the envelope: folded flaps
+    g.beginPath(); g.moveTo(10, 50); g.lineTo(32, 32); g.lineTo(54, 50); g.moveTo(10, 18); g.lineTo(30, 33); g.moveTo(54, 18); g.lineTo(34, 33); g.stroke();
+  } else {
+    g.beginPath(); g.moveTo(10, 18); g.lineTo(32, 38); g.lineTo(54, 18); g.stroke();
+    g.fillStyle = '#c21d1d'; g.fillRect(40 + f * 0.5, 21, 10, 8);
+    g.fillStyle = '#fff'; g.font = 'bold 6px monospace'; g.fillText('$', 43 + f * 0.5, 28);
+  }
   // eyes + mouth
-  ell(g, 24, 30, 4, 4, '#fff'); ell(g, 40, 34, 4, 4, '#fff');
-  ell(g, 24, 30, 2, 2, '#000'); ell(g, 40, 34, 2, 2, '#000');
-  ell(g, 32, 44, 7, atk ? 5 : 2, '#600');
+  eyes(v, dir, 24 + f, 40 + f, (x) => { const y = x < 32 + f ? 30 : 34; ell(g, x, y, 4, 4, '#fff'); ell(g, x + (v ? dir : 0), y, 2, 2, '#000'); });
+  if (!back) ell(g, 32 + f, 44, 7, atk ? 5 : 2, '#600');
   g.fillStyle = atk ? '#ffe14a' : '#e8741a'; g.font = 'bold 10px monospace';
   g.fillText('@', 2, 14 + phase * 2); g.fillText('@', 52, 12 - phase * 2);
-  g.fillStyle = '#e8c21a'; g.font = 'bold 5px monospace'; g.fillText('SPAM', 14, 26);
+  if (!back) { g.fillStyle = '#e8c21a'; g.font = 'bold 5px monospace'; g.fillText('SPAM', 14 + f * 0.5, 26); }
 }
 
 // Generic death frames: the sprite "glitches" into slices, then a pile of debris.
@@ -531,7 +583,34 @@ function buildEnemySprites(drawFn, debrisCols, seed) {
   const atk = makeSprite((g) => drawFn(g, 0, true), true);
   const die = [glitchFrame(walk[0].canvas, 6), glitchFrame(walk[1].canvas, 14)];
   for (const w of walk) w.canvas = null;   // only needed to derive the death frames
-  return { walk, atk, die, dead: debrisFrame(debrisCols, seed) };
+  return { walk, atk, die, dead: debrisFrame(debrisCols, seed), draw: drawFn };
+}
+
+// RETRO: Doom-style rotations. 8 views around the monster, 0 = facing the player,
+// counting with the monster turning to its left (the player sees its right side at 2).
+const ROT_VIEW = [[0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [3, -1], [2, -1], [1, -1]];
+const ROT_SQUASH = [1, 0.86, 0.68, 0.86, 1];
+function rotSprite(drawFn, phase, atk, r) {
+  const [v, dir] = ROT_VIEW[r];
+  return makeSprite((g) => {
+    g.translate(32, 0); g.scale(ROT_SQUASH[v], 1); g.translate(-32, 0);
+    drawFn(g, phase, atk, v, dir);
+    if (v >= 3) {
+      // the back is in its own shadow
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.globalCompositeOperation = 'source-atop';
+      g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(0, 0, TEX, TEX);
+    }
+  }, true, false, TEX);
+}
+// rot[r] = {walk: [2 frames], atk} for the 8 rotations (walk[0..1] and atk at TEX size).
+function buildRotations(S) {
+  if (S.rot) return S.rot;
+  S.rot = ROT_VIEW.map((_, r) => ({
+    walk: [0, 1].map((p) => rotSprite(S.draw, p, false, r)),
+    atk: rotSprite(S.draw, 0, true, r),
+  }));
+  return S.rot;
 }
 
 // Cage nut: square M6 nut inside its spring cage (wings)
@@ -628,7 +707,8 @@ const SPECIAL_TILES = { '3': 'esxi', '4': 'proxmox', '5': 'vates', '6': 'hyperv'
 /* ------------------------------------------------------------ mini-bosses */
 
 // Cable Spaghetti Monster: a knot of patch cables with googly eyes and RJ45 tentacles
-function drawSpaghetti(g, phase, atk) {
+function drawSpaghetti(g, phase, atk, v = 0, dir = 1) {
+  const f = FACE_SHIFT[v] * dir;
   const R = rng(77);
   const cols = ['#e8c21a', '#2a7de1', '#e8741a', '#d92d7a', '#8ad13a', '#e8e8e8', '#20b8c8'];
   for (let i = 0; i < 6; i++) {
@@ -646,14 +726,16 @@ function drawSpaghetti(g, phase, atk) {
   const ay = atk ? 6 : 16;
   cable(g, [[16, 30], [4, 26], [5, ay]], '#2a7de1', 2.2); rj45(g, 5, ay - 2, '#2a7de1');
   cable(g, [[48, 30], [60, 26], [59, ay + 2]], '#e8741a', 2.2); rj45(g, 59, ay, '#e8741a');
-  ell(g, 25, 26, 6, 6, '#fff'); ell(g, 39, 25, 7, 7, '#fff');
-  ell(g, 26 + phase, 27, 2.5, 2.5, '#c00'); ell(g, 38 + phase, 26, 3, 3, '#c00');
-  g.fillStyle = '#300'; g.fillRect(24, 36, 16, atk ? 6 : 3);
-  g.fillStyle = '#e8e8e8'; for (let x = 25; x < 40; x += 3) g.fillRect(x, 36, 1.6, 2);
+  eyes(v, dir, 25 + f, 39 + f, (x) => { ell(g, x, 26, 6.5, 6.5, '#fff'); ell(g, x + 1 + phase + (v ? dir : 0), 26.5, 2.8, 2.8, '#c00'); });
+  if (v < 3) {
+    g.fillStyle = '#300'; g.fillRect(24 + f, 36, 16, atk ? 6 : 3);
+    g.fillStyle = '#e8e8e8'; for (let x = 25; x < 40; x += 3) g.fillRect(x + f, 36, 1.6, 2);
+  }
 }
 
 // Hot Spot: an overheated flame elemental escaped from the hot aisle
-function drawHotspot(g, phase, atk) {
+function drawHotspot(g, phase, atk, v = 0, dir = 1) {
+  const fs = FACE_SHIFT[v] * dir;
   const flame = (w, h, col, wob) => {
     g.fillStyle = col; g.beginPath(); g.moveTo(32 - w, 62);
     g.quadraticCurveTo(32 - w - 4, 62 - h * 0.5, 32 - w * 0.3 + wob, 62 - h * 0.75);
@@ -664,10 +746,14 @@ function drawHotspot(g, phase, atk) {
   const f = phase ? 3 : -3;
   flame(24, 60, '#b8200a', f); flame(19, 50, '#ff5a1a', -f); flame(13, 38, '#ffb000', f * 0.7); flame(6, 22, '#fff2a0', -f * 0.5);
   // angry face
-  g.fillStyle = '#2a0800'; g.beginPath(); g.moveTo(20, 30); g.lineTo(30, 34); g.lineTo(21, 37); g.fill();
-  g.beginPath(); g.moveTo(44, 30); g.lineTo(34, 34); g.lineTo(43, 37); g.fill();
-  g.fillStyle = atk ? '#fff' : '#ffe14a'; g.fillRect(23, 34, 3, 1.5); g.fillRect(38, 34, 3, 1.5);
-  g.fillStyle = '#2a0800'; g.fillRect(26, 43, 12, atk ? 6 : 3);
+  g.save(); g.translate(fs, 0);
+  if (v < 3 && (v !== 2 || dir < 0)) { g.fillStyle = '#2a0800'; g.beginPath(); g.moveTo(20, 30); g.lineTo(30, 34); g.lineTo(21, 37); g.fill(); }
+  if (v < 3 && (v !== 2 || dir > 0)) { g.fillStyle = '#2a0800'; g.beginPath(); g.moveTo(44, 30); g.lineTo(34, 34); g.lineTo(43, 37); g.fill(); }
+  g.fillStyle = atk ? '#fff' : '#ffe14a';
+  eyes(v, dir, 23, 38, (x) => g.fillRect(x, 34, 3, 1.5));
+  g.fillStyle = '#2a0800'; if (v < 3) g.fillRect(26, 43, 12, atk ? 6 : 3);
+  g.restore();
+  if (v >= 3) return;   // the thermometer hangs on its front
   // thermometer
   g.fillStyle = '#f2f2f2'; g.fillRect(52, 8, 5, 30); ell(g, 54.5, 40, 4, 4, '#f2f2f2');
   g.fillStyle = '#e02020'; g.fillRect(53.5, 10, 2, 30); ell(g, 54.5, 40, 2.8, 2.8, '#e02020');
@@ -675,7 +761,7 @@ function drawHotspot(g, phase, atk) {
 }
 
 // Packet Storm: a DDoS thunder cloud full of packets
-function drawStorm(g, phase, atk) {
+function drawStorm(g, phase, atk, v = 0, dir = 1) {
   const pk = (x, y) => { g.fillStyle = '#f2f2f2'; g.fillRect(x, y, 7, 5); g.fillStyle = '#2a7de1'; g.fillRect(x, y, 7, 1.5); };
   const R = rng(5 + phase);
   for (let i = 0; i < 7; i++) pk(6 + R() * 48, 40 + R() * 20);
@@ -684,12 +770,13 @@ function drawStorm(g, phase, atk) {
   g.beginPath(); g.moveTo(28, 34); g.lineTo(22, 50); g.lineTo(28, 49); g.lineTo(24, 63); g.lineTo(36, 44); g.lineTo(30, 45); g.lineTo(34, 34); g.fill();
   // cloud
   for (const [x, y, r, c] of [[18, 26, 11, '#3a3f4a'], [32, 20, 14, '#454b58'], [46, 26, 11, '#3a3f4a'], [26, 30, 11, '#4e5563'], [40, 31, 11, '#4e5563'], [32, 16, 9, '#5a6070']]) ell(g, x, y, r, r * 0.8, c);
-  ell(g, 26, 26, 3.5, 2.5, atk ? '#fff' : '#ff3030'); ell(g, 38, 26, 3.5, 2.5, atk ? '#fff' : '#ff3030');
+  const fs = FACE_SHIFT[v] * dir;
+  eyes(v, dir, 26 + fs, 38 + fs, (x) => ell(g, x, 26, 3.5, 2.5, atk ? '#fff' : '#ff3030'));
   g.fillStyle = '#ffe14a'; g.font = 'bold 6px monospace'; g.fillText('SYN SYN SYN', 8 + phase * 2, 8);
 }
 
 // Bit Rot: a moldy golem made of stacked LTO tape cartridges
-function drawBitrot(g, phase, atk) {
+function drawBitrot(g, phase, atk, v = 0, dir = 1) {
   const lto = (x, y, w, h) => {
     g.fillStyle = '#1d2a4a'; g.fillRect(x, y, w, h);
     g.fillStyle = '#2e4270'; g.fillRect(x, y, w, 1.5);
@@ -704,7 +791,8 @@ function drawBitrot(g, phase, atk) {
   cable(g, [[50, 30], [60, atk ? 14 : 40], [56, atk ? 6 : 52]], '#5a3a1a', 3);
   lto(20, 8, 24, 18);
   // reel eyes
-  for (const x of [27, 37]) { ell(g, x, 16, 4, 4, '#c9cdd1'); ell(g, x, 16, 1.5, 1.5, atk ? '#ffe14a' : '#c00'); ln(g, x - 3, 16, x + 3, 16, '#555', 0.6); }
+  const fs = FACE_SHIFT[v] * dir * 0.6;
+  eyes(v, dir, 27 + fs, 37 + fs, (x) => { ell(g, x, 16, 4, 4, '#c9cdd1'); ell(g, x, 16, 1.5, 1.5, atk ? '#ffe14a' : '#c00'); ln(g, x - 3, 16, x + 3, 16, '#555', 0.6); });
   // mold
   const R = rng(9);
   for (let i = 0; i < 16; i++) ell(g, 16 + R() * 32, 10 + R() * 50, 1.5 + R() * 3, 1 + R() * 2, i % 2 ? '#4a7a2a' : '#6a9a3a');
@@ -712,7 +800,8 @@ function drawBitrot(g, phase, atk) {
 }
 
 // Shadow IT: a hooded ninja running unauthorized SaaS on a corporate credit card
-function drawShadowIT(g, phase, atk) {
+function drawShadowIT(g, phase, atk, v = 0, dir = 1) {
+  const fs = FACE_SHIFT[v] * dir * 0.6, back = v >= 3;
   const lo = phase ? 3 : -3;
   g.fillStyle = '#15101e'; g.fillRect(22, 44, 8, 20 + Math.min(0, lo)); g.fillRect(34, 44, 8, 20 - Math.max(0, lo));
   // scarf
@@ -720,12 +809,16 @@ function drawShadowIT(g, phase, atk) {
   // hoodie
   g.fillStyle = '#2c2240'; g.beginPath(); g.moveTo(16, 46); g.lineTo(20, 22); g.lineTo(44, 22); g.lineTo(48, 46); g.closePath(); g.fill();
   ell(g, 32, 16, 11, 12, '#2c2240');
-  ell(g, 32, 18, 8, 7, '#0a0810');
-  g.fillStyle = '#20e8ff'; g.fillRect(27, 17, 4, 1.5); g.fillRect(34, 17, 4, 1.5);
+  if (!back) ell(g, 32 + fs, 18, v === 2 ? 5 : 8, 7, '#0a0810');
+  g.fillStyle = '#20e8ff'; eyes(v, dir, 27 + fs, 34 + fs, (x) => g.fillRect(x, 17, 4, 1.5));
+  if (back) { ln(g, 32, 6, 32, 44, '#1a1426', 1.5); }
   // laptop with stickers
+  if (back) { g.fillStyle = '#9aa1a8'; g.fillRect(10, 32, 6, 13); }
+  else {
   g.fillStyle = '#9aa1a8'; g.fillRect(12, 32, 20, 13);
   g.fillStyle = '#7855fa'; ell(g, 18, 37, 2.5, 2.5, '#7855fa'); g.fillStyle = '#e8741a'; g.fillRect(23, 35, 5, 3);
   g.fillStyle = '#111'; g.font = 'bold 4px monospace'; g.fillText('SaaS', 17, 43);
+  }
   // credit card
   g.save(); g.translate(atk ? 54 : 48, atk ? 26 : 38); g.rotate(atk ? -0.6 : 0.2);
   g.fillStyle = '#e8c21a'; g.fillRect(-6, -4, 12, 8); g.fillStyle = '#222'; g.fillRect(-6, -2, 12, 2);

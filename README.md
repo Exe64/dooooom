@@ -13,11 +13,11 @@ No external assets: textures, logos, sprites, weapons and sounds are all generat
 
 Two visual styles, switched with **T**, from the title screen or from the pause menu (the choice is remembered):
 - **MODERN** (default): the 3D view is rendered at 720x346 and smoothly upscaled, with 256x256 textures and sprites,
-  soft sprite edges and finely rendered weapons.
-- **RETRO**: the Doom look, rendered at 480x230 with crisp pixels, 128x128 textures and sprites, and pixel-art weapons.
+  colored lighting, soft sprite edges and finely rendered weapons.
+- **RETRO**: a renderer that follows Doom's own limits (`js/retro.js`), described below.
 
-MODERN costs about 2.5 times more CPU than RETRO. On a machine that can't keep up, it first falls back
-to the lower resolution (still smoothed), then to the LOW graphics quality.
+MODERN costs much more CPU than RETRO. On a machine that can't keep up, it first falls back
+to a lower resolution (still smoothed), then to the LOW graphics quality.
 
 Details:
 - **Textures** keep logos, cabling and labels readable.
@@ -34,6 +34,29 @@ Details:
 All of this runs in the software renderer. Press **G** to switch to
 the LOW graphics mode (baked lighting only, no dynamic lights, bloom or vignette); the game also drops to LOW by itself
 on a machine that can't keep up.
+
+### The RETRO style, Doom-accurate
+
+- **320x200**, like VGA Mode 13h: a 320x168 3D view above a 32 pixel status bar.
+  The frame is shown at 4:3, so each pixel is 1.2 times taller than wide, as on a CRT;
+  the vertical projection compensates so that rooms and monsters keep their proportions. 90 degree field of view.
+- **256 colors**, one fixed palette built from strict ramps (grays, steel, concrete, reds, greens, blues,
+  Nutanix purple...) like Doom's `PLAYPAL`, plus 16 fixed brand and LED colors. Every texture and sprite is
+  quantized to it once; the frame is a buffer of palette indices.
+  **Palette flashes** swap the whole palette for a pre-tinted copy, as in Doom: 8 reds when you take damage,
+  4 golds on pickups, green under TURBO (Doom's radiation suit).
+- **No 3D lights.** Each map cell has a brightness from 0 to 255 in steps of 16 (Doom's sector light),
+  taken from the baked lightmap. A 32 level **COLORMAP** darkens colors with distance down to near black,
+  which gives the natural fog of dim rooms. Walls get Doom's fake contrast (east-west faces brighter),
+  emissive texels (LEDs, screens, exit signs) stay full bright, and firing briefly raises the light level.
+- **Vertical walls** with repeating 128 texel patches; floors and ceilings are **64x64 flats**.
+- **Sprites** are strict billboards. Monsters have **8 rotations** (front, three-quarters, profile, back),
+  so you can see where they look and sneak behind an idle one. Props use 8 of their 16 rotations.
+  The weapon is drawn at the bottom center at native resolution and swings left and right as you walk.
+  No vertical look (aiming is automatic in height, as in Doom).
+- **35 FPS**: the game logic advances in Doom's 35 Hz tics and a frame is drawn per tic.
+  Animations keep 2 to 4 frames per action.
+- The status bar, messages and automap are drawn in the 320x200 frame with a 3x5 pixel font.
 
 ## Play
 
@@ -60,7 +83,7 @@ Progress is saved in the browser (CONTINUE button, and a level select for unlock
 | Esc / P | Pause (mouse sensitivity, graphics, style) |
 | N / V | Mute sound / the admin's voice |
 | G | Graphics quality (high / low) |
-| T | Style: modern / retro (pixelated) |
+| T | Style: modern / retro (Doom-like 320x200) |
 
 Cheat codes: `iddqd` (root mode) and `idkfa`.
 
@@ -147,6 +170,7 @@ js/levels.js             episodes, level names, hand-drawn levels, difficulty se
 js/textures.js           textures, rack logos, sprites
 js/weapons.js            first-person weapon models and their pre-rendering
 js/lighting.js           lightmap baking, dynamic lights, bloom
+js/retro.js              RETRO renderer: 320x200, 256 color palette, COLORMAP, 35 Hz
 js/audio.js              synthesized sound effects
 js/game.js               raycasting engine, AI, weapons, HUD, save game, game loop
 tools/validate-levels.js checks all 50 levels

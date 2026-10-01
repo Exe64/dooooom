@@ -107,12 +107,12 @@ function quip(kind, chance = 1, force = false) {
 const view = document.getElementById('view');
 const vctx = view.getContext('2d');
 const vignette = document.getElementById('vignette');
-// The 3D view is rendered at RW x RVH (render scale RS of the 480x230 logical view);
-// layout, HUD and weapons stay in logical units.
-// Two looks: RETRO renders at 480x230 with crisp pixels and 128px textures (Doom-like);
-// MODERN renders at 1.5x (720x346), 256px textures, smooth upscaling and fine weapons.
+// Two looks. MODERN: this file's renderer, at RW x RVH (render scale RS of the 480x230
+// logical view, 1.5x by default), 256px textures, colored lighting, smooth upscaling;
+// layout, HUD and weapons stay in logical units. RETRO: js/retro.js, Doom's 320x200
+// indexed-color renderer, shown at 4:3 and stepped at 35 Hz.
 let style = 'modern';
-let WTEX = WTEX_HI, WSH = 8, AOSH = 0;   // wall texture size in use, its log2, AO table shift
+const WTEX = WTEX_HI, WSH = 8;
 const MODERN_SCALE = 1.5;
 let RS = 1, RW = W, RVH = VH, RHZ = HORIZ, RPROJ = PROJ;
 let scr, sctx, img, buf, zbuf, glow; // glow: 1 where the pixel emits light (feeds the bloom)
@@ -133,15 +133,16 @@ function setRenderScale(scale) {
 let K = 1;
 
 function resize() {
-  const ww = window.innerWidth, wh = window.innerHeight;
-  let cw = ww, ch = ww * H / W;
-  if (ch > wh) { ch = wh; cw = wh * W / H; }
+  const ww = window.innerWidth, wh = window.innerHeight, ar = style === 'retro' ? Retro.ASPECT : W / H;
+  let cw = ww, ch = ww / ar;
+  if (ch > wh) { ch = wh; cw = wh * ar; }
   view.style.width = cw + 'px';
   view.style.height = ch + 'px';
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   view.width = Math.round(cw * dpr);
   view.height = Math.round(ch * dpr);
   K = view.width / W;
+  vignette.style.display = style === 'retro' ? 'none' : '';
   // the vignette is a CSS layer over the 3D view: composited by the browser for free
   const vg = view.getBoundingClientRect();
   Object.assign(vignette.style, { left: vg.left + 'px', top: vg.top + 'px', width: cw + 'px', height: (ch * VH / H) + 'px' });
@@ -240,7 +241,8 @@ function loadLevel(idx) {
 function spawnEnemy(type, x, y) {
   const T = ETYPES[type];
   const e = { type, x, y, hp: T.hp, state: 'idle', timer: 0, cd: 0, animT: Math.random(), painT: 0, flash: 0, sees: false, losT: Math.random() * 0.2,
-    alerted: false, strafe: Math.random() < 0.5 ? 1 : -1, shots: 0, shotT: 0, attacks: 0, shrunk: 0, tpT: 4 };
+    alerted: false, strafe: Math.random() < 0.5 ? 1 : -1, shots: 0, shotT: 0, attacks: 0, shrunk: 0, tpT: 4,
+    face: randi(0, 7) * Math.PI / 4 };   // facing angle, for the RETRO rotation frames
   L.enemies.push(e);
   L.totalKills++;
   if (T.boss) L.bossAlive = true;
@@ -873,13 +875,13 @@ function updateEnemy(e, dt) {
   if (!shrunk && e.cd <= 0 && e.sees) {
     if (T.melee) {
       if (dist < T.atkRange + 0.25) {
-        e.state = 'attack'; e.timer = 0.45; e.cd = T.cd;
+        e.state = 'attack'; e.timer = 0.45; e.cd = T.cd; e.face = Math.atan2(dy, dx);
         damagePlayer(randi(T.dmg[0], T.dmg[1]), e.x, e.y);
         Sfx.melee(dist);
         return;
       }
     } else if (dist < T.atkRange) {
-      e.state = 'attack';
+      e.state = 'attack'; e.face = Math.atan2(dy, dx);
       e.shots = T.burst || 1;
       e.shotT = 0.2;
       e.timer = 0.25 + e.shots * 0.17;
@@ -908,6 +910,7 @@ function updateEnemy(e, dt) {
   const sp = T.speed * (shrunk ? 0.7 : 1) * dt;
   const r = shrunk ? 0.12 : T.radius;
   const ox = e.x, oy = e.y;
+  e.face = Math.atan2(mdy, mdx);
   moveEntity(e, mdx / md * sp, mdy / md * sp, r, false);
   const pr = r + 0.28;
   if (!shrunk && (e.x - P.x) ** 2 + (e.y - P.y) ** 2 < pr * pr) { e.x = ox; e.y = oy; }
@@ -1067,8 +1070,7 @@ function render() {
   const dirX = Math.cos(P.a), dirY = Math.sin(P.a);
   const plX = -dirY * PLANE, plY = dirX * PLANE;
   const w = L.w, h = L.h;
-  const HI = style === 'modern';
-  const floorT = HI ? Assets.floor : Assets.floor.map((t) => t.lo), ceilT = HI ? Assets.ceil : Assets.ceil.map((t) => t.lo);
+  const floorT = Assets.floor, ceilT = Assets.ceil;
   const concreteT = Assets.concrete[L.def.episode % 5];
   Light.update(L, P);
   [fogR, fogG, fogB] = Light.fog;
@@ -1118,7 +1120,7 @@ function render() {
     const ch = String.fromCharCode(RH.tile);
     const vars = ch === '#' || ch === '?' ? concreteT : Assets.walls[ch];
     const frames = vars[L.variant[vi] % vars.length];
-    const tex0 = frames[(animFrame + L.variant[vi]) % frames.length], tex = HI ? tex0 : tex0.lo;
+    const tex = frames[(animFrame + L.variant[vi]) % frames.length];
     let tx = (RH.wx * WTEX) | 0;
     if ((RH.side === 0 && rdx < 0) || (RH.side === 1 && rdy > 0)) tx = WTEX - 1 - tx;
     let s = lightAt(d);
@@ -1136,7 +1138,7 @@ function render() {
     for (let y = y0; y <= y1; y++, tp += step) {
       const row = (tp | 0) & (WTEX - 1), ti = row << WSH | tx;
       if (em[ti]) { buf[y * RW + x] = px[ti]; glow[y * RW + x] = 1; continue; }
-      const k = WALL_AO[row << AOSH];
+      const k = WALL_AO[row];
       buf[y * RW + x] = litPx(px[ti], mr * k, mg * k, mb * k, fr, fgg, fb);
     }
   }
@@ -1151,37 +1153,7 @@ function render() {
     const tx = invDet * (dirY * sx - dirX * sy);
     list.push({ spr, scale, z, flash, bright: bright ? 1 : 0, tx, ty, x, y });
   };
-  const frameOf = (a, t, fps) => (Array.isArray(a) ? a[((t * fps) | 0) % a.length] : a);
-  for (const d of L.decor) { const A = Assets.decor[d.type]; add(d.x, d.y, propFrame(A, d), A.scale, A.z); }
-  const UPS = Assets.decor.B;
-  for (const b of L.barrels) if (!b.dead) add(b.x, b.y, propFrame(UPS, b), UPS.scale, UPS.z, b.fuse >= 0);
-  const bobT = performance.now() / 400;
-  for (const it of L.items) {
-    if (it.taken) continue;
-    const floaty = 'ruFMKGYL'.includes(it.type);
-    add(it.x, it.y, Assets.items[it.type], 0.5, floaty ? 0.05 + Math.sin(bobT + it.x) * 0.03 : 0, 0, it.type === 'r' || it.type === 'u');
-  }
-  for (const e of L.enemies) {
-    const T = ETYPES[e.type], S = Assets.enemies[e.type];
-    let spr;
-    if (e.state === 'dead') spr = S.dead;
-    else if (e.state === 'dying') spr = S.die[e.timer > 0.25 ? 0 : 1];
-    else if (e.state === 'attack') spr = S.atk;
-    else if (e.state === 'idle') spr = S.walk[0];
-    else spr = S.walk[((e.animT * (e.type === 'drone' ? 6 : e.shrunk > 0 ? 10 : 4)) | 0) % 2];
-    let z = T.z;
-    let scale = T.scale;
-    if (e.type === 'drone' && e.state !== 'dead') z += Math.sin(e.animT * 3 + e.x) * 0.05;
-    if (e.state === 'dead') { z = 0; scale = Math.max(0.8, T.scale * 0.7); }
-    if (e.shrunk > 0 && alive(e)) { scale *= e.shrunk < 1 ? 0.3 + 0.7 * (1 - e.shrunk) : 0.3; z = 0; }
-    add(e.x, e.y, spr, scale, z, e.flash > 0);
-  }
-  for (const p of L.proj) add(p.x, p.y, frameOf(Assets.proj[p.kind], p.t, 16), p.scale || 0.35, p.z, false, true);
-  for (const f of L.fx) {
-    const fr = Assets.fx[f.kind];
-    const i = Math.min(fr.length - 1, (f.t / f.dur * fr.length) | 0);
-    add(f.x, f.y, fr[i], f.scale, f.z - f.scale / 2 + (f.kind === 'smoke' ? f.t * 0.4 : 0), false, true);
-  }
+  collectSprites(add, false);
   list.sort((a, b) => b.ty - a.ty);
   for (const s of list) drawSprite(s);
 
@@ -1198,18 +1170,65 @@ function render() {
   sctx.putImageData(img, 0, 0);
 }
 
-// Picks the rotation frame of a volumetric prop according to where the player stands.
-function propFrame(A, o) {
+// Every billboard of the frame, through add(x, y, spr, scale, z, flash, bright).
+// RETRO (retro = true) picks the monsters' rotation frames (8 views, Doom-style)
+// and 8 of the props' 16 rotations.
+function collectSprites(add, retro) {
+  const frameOf = (a, t, fps) => (Array.isArray(a) ? a[((t * fps) | 0) % a.length] : a);
+  for (const d of L.decor) { const A = Assets.decor[d.type]; add(d.x, d.y, propFrame(A, d, retro), A.scale, A.z); }
+  const UPS = Assets.decor.B;
+  for (const b of L.barrels) if (!b.dead) add(b.x, b.y, propFrame(UPS, b, retro), UPS.scale, UPS.z, b.fuse >= 0);
+  const bobT = performance.now() / 400;
+  for (const it of L.items) {
+    if (it.taken) continue;
+    const floaty = 'ruFMKGYL'.includes(it.type);
+    add(it.x, it.y, Assets.items[it.type], 0.5, floaty ? 0.05 + Math.sin(bobT + it.x) * 0.03 : 0, 0, it.type === 'r' || it.type === 'u');
+  }
+  for (const e of L.enemies) {
+    const T = ETYPES[e.type], S = Assets.enemies[e.type];
+    const R = retro && alive(e) ? buildRotations(S)[enemyRot(e)] : S;
+    let spr;
+    if (e.state === 'dead') spr = S.dead;
+    else if (e.state === 'dying') spr = S.die[e.timer > 0.25 ? 0 : 1];
+    else if (e.state === 'attack') spr = R.atk;
+    else if (e.state === 'idle') spr = R.walk[0];
+    else spr = R.walk[((e.animT * (e.type === 'drone' ? 6 : e.shrunk > 0 ? 10 : 4)) | 0) % 2];
+    let z = T.z;
+    let scale = T.scale;
+    if (e.type === 'drone' && e.state !== 'dead') z += Math.sin(e.animT * 3 + e.x) * 0.05;
+    if (e.state === 'dead') { z = 0; scale = Math.max(0.8, T.scale * 0.7); }
+    if (e.shrunk > 0 && alive(e)) { scale *= e.shrunk < 1 ? 0.3 + 0.7 * (1 - e.shrunk) : 0.3; z = 0; }
+    add(e.x, e.y, spr, scale, z, e.flash > 0);
+  }
+  for (const p of L.proj) add(p.x, p.y, frameOf(Assets.proj[p.kind], p.t, 16), p.scale || 0.35, p.z, false, true);
+  for (const f of L.fx) {
+    const fr = Assets.fx[f.kind];
+    const i = Math.min(fr.length - 1, (f.t / f.dur * fr.length) | 0);
+    add(f.x, f.y, fr[i], f.scale, f.z - f.scale / 2 + (f.kind === 'smoke' ? f.t * 0.4 : 0), false, true);
+  }
+}
+
+// Rotation (0-7) under which the player sees a monster: 0 when it faces the player,
+// 2 when it faces the player's right, 4 from behind (see rotSprite in textures.js).
+function enemyRot(e) {
+  const rel = Math.atan2(P.y - e.y, P.x - e.x) - e.face;
+  return ((Math.round(rel / (Math.PI / 4)) % 8) + 8) % 8;
+}
+
+// Picks the rotation frame of a volumetric prop according to where the player stands
+// (RETRO: 8 rotations like Doom, out of the 16 rendered).
+function propFrame(A, o, eight) {
   const n = A.frames.length;
   if (n === 1) return A.frames[0];
   const phi = Math.atan2(P.y - o.y, P.x - o.x);
   const yaw = Math.atan2(-Math.cos(phi), -Math.sin(phi)) + (o.face || 0);
-  const k = ((Math.round(yaw / (Math.PI * 2) * n) % n) + n) % n;
-  return A.frames[k];
+  const m = eight && n % 8 === 0 ? 8 : n;
+  const k = ((Math.round(yaw / (Math.PI * 2) * m) % m) + m) % m;
+  return A.frames[k * (n / m)];
 }
 
 function drawSprite(s) {
-  const spr = style === 'modern' ? s.spr : s.spr.lo, sw = spr.w, sh = spr.h, px = spr.px;
+  const spr = s.spr, sw = spr.w, sh = spr.h, px = spr.px;
   const size = s.scale * RPROJ / s.ty;
   const cx = (RW / 2) * (1 + s.tx / s.ty);
   const bottom = RHZ + (0.5 - s.z) * RPROJ / s.ty;
@@ -1264,8 +1283,10 @@ const CAN_FILTER = typeof CanvasRenderingContext2D !== 'undefined' && 'filter' i
 // Draws the weapon held in hand on the high-resolution canvas (logical coordinates).
 // The models are pre-rendered by js/weapons.js; here we only pick the pose and
 // add bobbing, recoil, lighting and the muzzle flash.
-function drawWeapon(g, shx, shy) {
-  if (P.dead) return;
+// part: 'all', or for RETRO 'art' (the model, unlit) then 'fx' (flash and glow, full bright).
+// Returns whether something was drawn.
+function drawWeapon(g, shx, shy, part = 'all') {
+  if (P.dead) return false;
   const A = Assets.weapons, t = P.wAnim;
   const bx = Math.cos(P.bobPhase) * 8 * P.bobAmt + shx;
   const by = Math.abs(Math.sin(P.bobPhase)) * 6 * P.bobAmt + P.raise * 120 + shy;
@@ -1285,14 +1306,15 @@ function drawWeapon(g, shx, shy) {
     default: art = A.plasma; dy = t * 8; flash = ['#ffffff', '#3cf', 24]; break;
   }
   const lum = Math.min(1.2, L.def.ambient * 0.85 + 0.2 + (P.flashT > 0 ? 0.35 : 0));
+  const m = art.muzzle, fx = m && (INV.cur === 7 || INV.cur === 6 || (flash && P.flashT > 0));
+  if (part === 'fx' && !fx) return false;
   g.save();
   g.translate(bx + dx, by + dy);
   if (rot) { const px = art.x + art.w * 0.85, py = art.y + art.h; g.translate(px, py); g.rotate(rot); g.translate(-px, -py); }
-  if (CAN_FILTER && Math.abs(lum - 1) > 0.02) g.filter = `brightness(${lum.toFixed(2)})`;
-  g.drawImage(art.c, art.x, art.y, art.w, art.h);
+  if (part === 'all' && CAN_FILTER && Math.abs(lum - 1) > 0.02) g.filter = `brightness(${lum.toFixed(2)})`;
+  if (part !== 'fx') g.drawImage(art.c, art.x, art.y, art.w, art.h);
   g.filter = 'none';
-  const m = art.muzzle;
-  if (m) {
+  if (m && part !== 'art') {
     if (INV.cur === 7 || INV.cur === 6) {
       // energy weapons: pulsing glow at the nozzle
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 90);
@@ -1304,6 +1326,7 @@ function drawWeapon(g, shx, shy) {
     if (flash && P.flashT > 0) drawFlash(g, m[0] + rand(-1, 1), m[1] - 2, flash[2], flash[0], flash[1]);
   }
   g.restore();
+  return true;
 }
 
 /* ------------------------------------------------------------------- HUD */
@@ -1494,15 +1517,32 @@ function update(dt) {
   if (P.dead && P.deadT > 1.6 && state === 'playing') showDeath();
 }
 
-let last = 0;
+// Draws the current frame in the active style (also used by the pause menu).
+function drawFrame() {
+  if (style === 'retro') Retro.frame();
+  else { render(); present(); }
+}
+
+let last = 0, tics = 0;
 // Average render cost while playing: on a machine too slow for the HIGH
 // effects, quality drops to LOW once (the player can switch back with G).
 let renderCost = 0, slowT = 0, autoLowered = false;
 function frame(ts) {
-  const dt = Math.min(0.05, (ts - last) / 1000 || 0);
+  const raw = Math.min(0.2, (ts - last) / 1000 || 0);
   last = ts;
+  const shown = L && state !== 'title' && state !== 'loading' && state !== 'select';
+  if (style === 'retro') {
+    // Doom's 35 Hz: the logic advances in fixed tics and a frame is drawn per tic
+    tics += raw * 35;
+    let n = 0;
+    for (; tics >= 1; tics--, n++) if (state === 'playing') update(1 / 35);
+    if (n && shown) Retro.frame();
+    requestAnimationFrame(frame);
+    return;
+  }
+  const dt = Math.min(0.05, raw);
   if (state === 'playing') update(dt);
-  if (L && state !== 'title' && state !== 'loading' && state !== 'select') {
+  if (shown) {
     const t0 = performance.now();
     render(); present();
     if (state === 'playing' && !autoLowered && (Light.high || RS > 1)) {
@@ -1560,7 +1600,7 @@ const CONTROLS = `
     <tr><td>Esc</td><td>Pause</td></tr>
     <tr><td>N / V</td><td>Mute sound / voice</td></tr>
     <tr><td>G</td><td>Graphics quality (high / low)</td></tr>
-    <tr><td>T</td><td>Style: modern / retro (pixelated)</td></tr>
+    <tr><td>T</td><td>Style: modern / retro (Doom-like 320x200)</td></tr>
   </table>`;
 
 const actions = {
@@ -1632,7 +1672,7 @@ function startLevel(idx) {
   writeSave(idx, INV_START);
   if (!INV.weapons[INV.cur]) INV.cur = 1;
   state = 'briefing';
-  render(); present();
+  drawFrame();
   showPanel(`
     <h2>${L.def.name}<br><span class="ep">EPISODE ${L.def.episode + 1}: ${EPISODES[L.def.episode].name}</span></h2>
     <p class="story">${L.def.intro}</p>
@@ -1658,23 +1698,24 @@ function pauseGame() {
     ${CONTROLS}
   `);
   const gb = document.getElementById('gfx');
-  gb.onclick = () => { toggleGraphics(); gb.textContent = `GRAPHICS: ${Light.high ? 'HIGH' : 'LOW'}`; render(); present(); };
+  gb.onclick = () => { toggleGraphics(); gb.textContent = `GRAPHICS: ${Light.high ? 'HIGH' : 'LOW'}`; drawFrame(); };
   const sb = document.getElementById('sty');
-  sb.onclick = () => { toggleStyle(); sb.textContent = `STYLE: ${style.toUpperCase()}`; render(); present(); };
+  sb.onclick = () => { toggleStyle(); sb.textContent = `STYLE: ${style.toUpperCase()}`; drawFrame(); };
   const s = document.getElementById('sens');
   s.oninput = () => { sensitivity = +s.value; try { localStorage.setItem('dukenutanix.sens', s.value); } catch (e) { /* ignored */ } };
 }
 
-// RETRO (pixelated, Doom-like) or MODERN (finer, smoothed) look.
+// RETRO (Doom's 320x200, 256 colors, 35 Hz) or MODERN (finer, smoothed) look.
 function setStyle(st, quiet) {
   style = st === 'retro' ? 'retro' : 'modern';
   const hi = style === 'modern';
-  WTEX = hi ? WTEX_HI : TEX; WSH = Math.log2(WTEX); AOSH = Math.log2(WTEX_HI / WTEX);
-  setRenderScale(hi ? MODERN_SCALE : 1);
-  Assets.weapons = hi ? Assets.weaponsHi : Assets.weaponsLo;
+  if (hi) setRenderScale(MODERN_SCALE);
+  else Retro.init();
+  Assets.weapons = hi ? Assets.weaponsHi : Assets.weaponsRetro;
   view.style.imageRendering = hi ? 'auto' : 'pixelated';
+  resize();
   try { localStorage.setItem('dukenutanix.style', style); } catch (e) { /* ignored */ }
-  if (!quiet && L) msg(hi ? 'Style: MODERN (finer graphics)' : 'Style: RETRO (pixelated, Doom-like)');
+  if (!quiet && L) msg(hi ? 'Style: MODERN (finer graphics)' : 'Style: RETRO (320x200, 256 colors, 35 fps)');
 }
 function toggleStyle() { setStyle(style === 'modern' ? 'retro' : 'modern'); }
 
@@ -1851,7 +1892,7 @@ function boot() {
     if (localStorage.getItem('dukenutanix.gfx') === 'low') { Light.high = false; vignette.hidden = true; }
   } catch (e) { /* ignored */ }
   buildAssets();
-  Assets.weaponsLo = WeaponArt.build({ pixel: true });
+  Assets.weaponsRetro = WeaponArt.build({ pixel: true, s: 320 / W, sy: 320 / W / 1.2 });
   Assets.weaponsHi = WeaponArt.build({ pixel: false });
   let st = 'modern';
   try { st = localStorage.getItem('dukenutanix.style') || 'modern'; } catch (e) { /* ignored */ }

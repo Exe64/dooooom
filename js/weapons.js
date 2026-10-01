@@ -10,7 +10,7 @@
  * recoil and a dynamic muzzle flash.
  */
 const WeaponArt = (() => {
-  let S = 2;                   // texels per logical screen pixel (2 RETRO, 4 MODERN)
+  let S = 2, SY = 2;           // texels per logical screen pixel, horizontally and vertically
   let PIXEL = true;            // RETRO: binary alpha, posterized colors, dark outline
   const VW = 480, VHH = 230;   // logical size of the 3D view (matches game.js)
   const CX = 240, CY = 115;    // vanishing point = crosshair
@@ -120,10 +120,10 @@ const WeaponArt = (() => {
   function render(rawFaces) {
     const faces = rawFaces.map((f) => ({ ...f, pts: f.pts.map(place), center: place(f.center) }));
     const c = document.createElement('canvas');
-    c.width = VW * S; c.height = VHH * S;
+    c.width = Math.round(VW * S); c.height = Math.round(VHH * SY);
     const g = c.getContext('2d');
     g.imageSmoothingEnabled = !PIXEL;
-    g.scale(S, S);
+    g.scale(S, SY);
     const vis = [];
     for (const f of faces) {
       let n = norm(cross(sub(f.pts[1], f.pts[0]), sub(f.pts[2], f.pts[0])));
@@ -185,7 +185,7 @@ const WeaponArt = (() => {
     const out = document.createElement('canvas');
     out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
     out.getContext('2d').drawImage(c, -x0, -y0);
-    return { c: out, x: x0 / S, y: y0 / S, w: out.width / S, h: out.height / S };
+    return { c: out, x: x0 / S, y: y0 / SY, w: out.width / S, h: out.height / SY };
   }
 
   /* -------------------------------------------------------------- textures */
@@ -383,9 +383,11 @@ const WeaponArt = (() => {
 
 
   /* ----------------------------------------------------------- build all */
-  // opts: {pixel: true} for the RETRO look (2 texels per pixel), {pixel: false} for MODERN (4).
+  // opts: {pixel: false} for MODERN (4 texels per pixel, anti-aliased); {pixel: true, s, sy}
+  // for RETRO, rendered straight at the 320x200 resolution (s = 2/3) with the pixels
+  // 1.2 times taller than wide (sy = s / 1.2), so each texel is one screen pixel.
   function build(opts = { pixel: true }) {
-    PIXEL = opts.pixel; S = PIXEL ? 2 : 4;
+    PIXEL = opts.pixel; S = opts.s || (PIXEL ? 2 : 4); SY = opts.sy || S;
     const make = (m, v) => { view = Object.assign({ f: 340, ox: 0, oy: 0 }, v); const r = render(m.faces || m); r.muzzle = m.muzzle ? project(place(m.muzzle)) : null; return r; };
     return {
       keyboard: make(keyboard(), VIEWS.keyboard),
