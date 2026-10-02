@@ -1,0 +1,136 @@
+# Builds Duke Nutanix and publishes a GitHub Release.
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# produces a release with the web version (zip) and the desktop app for
+# Windows (.msi, setup .exe), macOS (universal .dmg) and Linux (.AppImage,
+# .deb, .rpm). Running the workflow by hand (Actions > Release > Run workflow)
+# builds everything as downloadable run artifacts, without a release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  web:
+    name: Web version
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check the 50 levels
+        run: node tools/validate-levels.js
+      - name: Zip the game
+        run: |
+          node tools/build-web.js
+          name="duke-nutanix-${GITHUB_REF_NAME//\//-}-web"
+          mv dist "$name"
+          zip -qr "$name.zip" "$name"
+          echo "ZIP=$name.zip" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: ${{ env.ZIP }}
+      - name: Create the draft release
+        id: release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Duke Nutanix ${{ github.ref_name }}
+          files: ${{ env.ZIP }}
+          body: |
+            ## Download
+
+            | System | File |
+            | --- | --- |
+            | Windows 10/11 | `Duke.Nutanix_*_x64-setup.exe` (or the `.msi`) |
+            | macOS 10.15+ (Intel and Apple silicon) | `Duke.Nutanix_*_universal.dmg` |
+            | Linux | `.AppImage` (any distribution), `.deb` (Debian, Ubuntu), `.rpm` (Fedora) |
+            | Any browser, no install | `duke-nutanix-*-web.zip`: unzip and open `index.html` |
+
+            The apps are not signed with a paid certificate yet:
+            - **Windows**: SmartScreen shows "Windows protected your PC": click **More info** then **Run anyway**.
+            - **macOS**: if it says the app is damaged or cannot be checked, move it to Applications and run
+              `xattr -cr "/Applications/Duke Nutanix.app"` in a Terminal, or right-click the app and choose **Open**.
+            - **Linux**: make the AppImage executable (`chmod +x Duke*.AppImage`).
+
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            args: ''
+            targets: ''
+          - name: macOS
+            os: macos-latest
+            args: --target universal-apple-darwin
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - name: Linux
+            os: ubuntu-22.04   # older glibc: the AppImage runs on more distributions
+            args: ''
+            targets: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          node -e "const f='src-tauri/tauri.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(c,null,2))" "$v"
+      - name: Build (and attach to the release)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: npx --yes @tauri-apps/cli@2
+          args: ${{ matrix.args }}
+          releaseId: ${{ needs.web.outputs.release_id }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.dmg
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.rpm
+
+  publish:
+    name: Publish the release
+    needs: [web, desktop]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

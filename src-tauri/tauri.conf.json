@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Duke Nutanix",
+  "version": "1.0.0",
+  "identifier": "io.github.exe64.dukenutanix",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "node tools/build-web.js"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DUKE NUTANIX: The admin is back",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 640,
+        "minHeight": 400,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Game",
+    "shortDescription": "Retro FPS in the spirit of Duke Nukem: 50 datacenter levels",
+    "longDescription": "A ransomware has seized the server rooms. The on-call admin sets out to reboot everything: 5 episodes, 50 levels, and every hypervisor rack migrated to Nutanix with a mechanical keyboard.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "10.15"
+    },
+    "copyright": "Duke Nutanix contributors"
+  }
+}

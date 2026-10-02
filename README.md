@@ -68,16 +68,53 @@ renderer (720x346 view, smoothly upscaled, with the baked lightmap, dynamic ligh
   Animations keep 2 to 4 frames per action.
 - The status bar, messages and automap are drawn in the 320x200 frame with a 3x5 pixel font.
 
-## Play
+## Download and play
 
-Open `index.html` in a browser, or serve the folder:
+Grab the latest version from the [Releases page](../../releases/latest):
+
+| System | File |
+| --- | --- |
+| Windows 10/11 | `Duke.Nutanix_*_x64-setup.exe` (or the `.msi`) |
+| macOS 10.15+ (Intel and Apple silicon) | `Duke.Nutanix_*_universal.dmg` |
+| Linux | `.AppImage` (any distribution), `.deb` (Debian, Ubuntu), `.rpm` (Fedora) |
+| Any browser, no install | `duke-nutanix-*-web.zip`: unzip and open `index.html` |
+
+The desktop apps are small (a few MB): they wrap the game in the system's web view (WebView2 on Windows,
+WebKit on macOS and Linux) with [Tauri](https://tauri.app). They are not signed with a paid certificate yet:
+- **Windows**: SmartScreen shows "Windows protected your PC": click **More info** then **Run anyway**.
+- **macOS**: if it says the app is damaged or cannot be checked, move it to Applications and run
+  `xattr -cr "/Applications/Duke Nutanix.app"` in a Terminal, or right-click the app and choose **Open**.
+- **Linux**: make the AppImage executable (`chmod +x Duke*.AppImage`). The admin's voice needs a browser
+  with speech synthesis; WebKitGTK has none, so on Linux the one-liners are subtitles only.
+
+From the source, open `index.html` in a browser, or serve the folder:
 
 ```sh
 python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-Progress is saved in the browser (CONTINUE button, and a level select for unlocked levels).
+Progress is saved locally (CONTINUE button, and a level select for unlocked levels).
+
+### Building a release
+
+Push a version tag and GitHub Actions does the rest (`.github/workflows/release.yml`):
+
+```sh
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+It checks the levels, zips the web version, builds the desktop apps on Windows, macOS and Linux,
+attaches everything to a draft release and publishes it once all builds succeed.
+Running the workflow by hand (Actions, Release, Run workflow) builds the same files as run artifacts, without a release.
+
+To build the desktop app locally, install [Rust](https://rustup.rs), Node.js and the
+[Tauri prerequisites](https://tauri.app/start/prerequisites/), then:
+
+```sh
+cd src-tauri
+npx @tauri-apps/cli@2 build      # or "dev" to run it without packaging
+```
 
 ## Controls
 
@@ -179,9 +216,15 @@ js/levelgen.js           procedural generator + map validation
 js/levels.js             episodes, level names, hand-drawn levels, difficulty settings
 js/textures.js           textures, rack logos, sprites
 js/weapons.js            first-person weapon models and their pre-rendering
+js/gl.js                 MODERN renderer on the GPU (WebGL2)
 js/lighting.js           lightmap baking, dynamic lights, bloom
 js/retro.js              RETRO renderer: 320x200, 256 color palette, COLORMAP, 35 Hz
 js/audio.js              synthesized sound effects
 js/game.js               raycasting engine, AI, weapons, HUD, save game, game loop
 tools/validate-levels.js checks all 50 levels
+tools/build-web.js       copies the game into dist/ (packaged by the desktop app, zipped for the web release)
+fonts/                   Press Start 2P, bundled so the game works offline (SIL Open Font License)
+docs/icon.png            app icon
+src-tauri/               desktop app (Tauri): window settings, bundle formats, icons
+.github/workflows/       release build
 ```
