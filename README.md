@@ -87,6 +87,10 @@ with [Tauri](https://tauri.app), so they stay small: a few MB, except the AppIma
 - **Linux**: make the AppImage executable (`chmod +x Duke*.AppImage`). The admin's voice needs a browser
   with speech synthesis; WebKitGTK has none, so on Linux the one-liners are subtitles only.
 
+**Updates**: the desktop app checks for a new version at startup and offers it in a banner on the menus
+(download, install and restart in one click; every update is signed and verified before it is installed).
+The web version only points to the new release.
+
 From the source, open `index.html` in a browser, or serve the folder:
 
 ```sh
@@ -107,6 +111,23 @@ git tag v1.0.0 && git push origin v1.0.0
 It checks the levels, zips the web version, builds the desktop apps on Windows, macOS and Linux,
 attaches everything to a draft release and publishes it once all builds succeed.
 Running the workflow by hand (Actions, Release, Run workflow) builds the same files as run artifacts, without a release.
+
+Auto-update needs an update signing key, separate from any Windows or Apple certificate. Create it once:
+
+```sh
+npx @tauri-apps/cli@2 signer generate -w duke-nutanix.key
+```
+
+then add three repository secrets (Settings, Secrets and variables, Actions):
+
+| Secret | Value |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | content of `duke-nutanix.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the password chosen above |
+| `TAURI_UPDATER_PUBKEY` | content of `duke-nutanix.key.pub` |
+
+Keep the key and its password safe: installed apps only accept updates signed with it.
+Without the secrets, releases still build, without auto-update.
 
 To build the desktop app locally, install [Rust](https://rustup.rs), Node.js and the
 [Tauri prerequisites](https://tauri.app/start/prerequisites/), then:
@@ -220,6 +241,8 @@ js/gl.js                 MODERN renderer on the GPU (WebGL2)
 js/lighting.js           lightmap baking, dynamic lights, bloom
 js/retro.js              RETRO renderer: 320x200, 256 color palette, COLORMAP, 35 Hz
 js/audio.js              synthesized sound effects
+js/update.js             update check (desktop app: install; web: link to the release)
+js/version.js            game version, written by tools/build-web.js
 js/game.js               raycasting engine, AI, weapons, HUD, save game, game loop
 tools/validate-levels.js checks all 50 levels
 tools/build-web.js       copies the game into dist/ (packaged by the desktop app, zipped for the web release)

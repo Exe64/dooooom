@@ -79,14 +79,26 @@
     .sens { display: block; font-size: 8px; margin-top: 16px; color: #9aa3ad; }
     .sens input { vertical-align: middle; margin-left: 8px; }
     noscript { color: #fff; }
+    #update {
+      position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px);
+      font-size: 9px; line-height: 1.8; text-align: center; color: #d8dde3;
+      background: rgba(20,14,40,0.95); border: 2px solid #7855fa; padding: 10px 16px;
+      box-shadow: 0 0 24px rgba(120,85,250,0.35);
+    }
+    #update[hidden] { display: none; }
+    #update b { color: #b6a4ff; }
+    #update a { color: #3dff6a; margin: 0 8px; }
+    #update button { font-size: 8px; padding: 6px 10px; margin: 0 0 0 10px; }
   </style>
 </head>
 <body>
   <canvas id="gl"></canvas>
   <canvas id="view" width="960" height="540"></canvas>
   <div id="vignette"></div>
-  <div id="overlay"><div id="panel"><h2>LOADING DATACENTER...</h2></div></div>
+  <div id="overlay"><div id="panel"><h2>LOADING DATACENTER...</h2></div><div id="update" hidden></div></div>
   <noscript>This game requires JavaScript.</noscript>
+  <script src="js/version.js"></script>
+  <script src="js/update.js"></script>
   <script src="js/levelgen.js"></script>
   <script src="js/levels.js"></script>
   <script src="js/audio.js"></script>

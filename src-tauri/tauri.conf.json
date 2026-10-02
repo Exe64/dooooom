@@ -16,12 +16,14 @@
         "minWidth": 640,
         "minHeight": 400,
         "center": true,
-        "resizable": true
+        "resizable": true,
+        "label": "main"
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,
@@ -41,5 +43,16 @@
       "minimumSystemVersion": "10.15"
     },
     "copyright": "Duke Nutanix contributors"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/Exe64/dukenutanix/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

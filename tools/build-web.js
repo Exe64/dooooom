@@ -11,4 +11,7 @@ fs.rmSync(dist, { recursive: true, force: true });
 for (const p of ['index.html', 'js', 'fonts', 'docs/icon.png']) {
   fs.cpSync(path.join(root, p), path.join(dist, p), { recursive: true });
 }
-console.log('dist/ ready');
+// the version shown by the update check: the one of the desktop app (set from the git tag by the release workflow)
+const { version } = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+fs.writeFileSync(path.join(dist, 'js', 'version.js'), `'use strict';\nconst GAME_VERSION = '${version}';\n`);
+console.log(`dist/ ready (version ${version})`);

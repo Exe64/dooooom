@@ -1948,6 +1948,7 @@ function boot() {
   try { st = localStorage.getItem('dukenutanix.style') || 'modern'; } catch (e) { /* ignored */ }
   setStyle(st, true);
   showTitle();
+  Update.check();
   requestAnimationFrame(frame);
   // debug hook for automated tests
   window.__duke = { get L() { return L; }, P, get INV() { return INV; }, get state() { return state; }, actions, keys, castRay };

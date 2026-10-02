@@ -6,6 +6,12 @@
 # Windows (.msi, setup .exe), macOS (universal .dmg) and Linux (.AppImage,
 # .deb, .rpm). Running the workflow by hand (Actions > Release > Run workflow)
 # builds everything as downloadable run artifacts, without a release.
+#
+# Auto-update needs three repository secrets (Settings > Secrets and variables > Actions),
+# made with `npx @tauri-apps/cli@2 signer generate -w duke-nutanix.key`:
+#   TAURI_SIGNING_PRIVATE_KEY           content of duke-nutanix.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
+#   TAURI_UPDATER_PUBKEY                content of duke-nutanix.key.pub
 name: Release
 
 on:
@@ -29,6 +35,12 @@ jobs:
           node-version: 22
       - name: Check the 50 levels
         run: node tools/validate-levels.js
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          node -e "const f='src-tauri/tauri.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(c,null,2))" "$v"
       - name: Zip the game
         run: |
           node tools/build-web.js
@@ -106,10 +118,23 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           node -e "const f='src-tauri/tauri.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(c,null,2))" "$v"
+      # Auto-update: with the signing key in the repository secrets, the build also produces
+      # signed update bundles and latest.json, and the app gets the public key to verify them.
+      # Without the secrets the apps build normally, with no updates.
+      - name: Enable the updater
+        shell: bash
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          if [ "$HAS_KEY" != "true" ] || [ -z "$PUBKEY" ]; then echo "::warning::No updater key in the secrets: building without auto-update"; exit 0; fi
+          node -e "const f='src-tauri/tauri.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.bundle.createUpdaterArtifacts=true;c.plugins.updater.pubkey=process.env.PUBKEY;fs.writeFileSync(f,JSON.stringify(c,null,2))"
       - name: Build (and attach to the release)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: npx --yes @tauri-apps/cli@2
           args: ${{ matrix.args }}
