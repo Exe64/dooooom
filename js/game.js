@@ -628,6 +628,7 @@ function meleeAttack(w) {
   const i = RH.my * L.w + RH.mx;
   if ('3456'.includes(ch)) {
     L.map[i] = '7'.charCodeAt(0);
+    if (useGL) GLR.retile(L);
     L.migrated++;
     Sfx.nutanix();
     const hx = P.x + dx * (RH.d - 0.1), hy = P.y + dy * (RH.d - 0.1);

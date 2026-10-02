@@ -1759,6 +1759,8 @@ const GLR = (() => {
     fx(kind, x, y, z, scale) { if (ok) fx(kind, x, y, z, scale); },
     kill(e) { if (ok) kill(e); },
     shot(cur, P) { if (ok) shot(cur, P); },
+    // a wall tile changed (rack migrated to Nutanix): the static geometry is rebuilt
+    retile(L) { if (ok && L === curL) buildWorld(L); },
     // finishes the background work at once (automated tests)
     flushWarm() { if (curL) warmUp(curL, 1e9); },
     get ok() { return ok; },
