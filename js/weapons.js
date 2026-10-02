@@ -12,6 +12,7 @@
 const WeaponArt = (() => {
   let S = 2, SY = 2;           // texels per logical screen pixel, horizontally and vertically
   let PIXEL = true;            // RETRO: binary alpha, posterized colors, dark outline
+  let TESS = 1, TEXS = 4;      // tube sides multiplier, texture canvas scale (raised for the GPU meshes)
   const VW = 480, VHH = 230;   // logical size of the 3D view (matches game.js)
   const CX = 240, CY = 115;    // vanishing point = crosshair
   // per-weapon framing: focal length, screen offset, and a model placement (yaw/pitch around a pivot, then shift)
@@ -57,14 +58,14 @@ const WeaponArt = (() => {
     const out = [];
     for (const [name, pts] of Object.entries(faces)) {
       const fc = (o.cols && o.cols[name]) || col;
-      out.push({ pts, col: fc, emit: o.emit || (o.emitFaces && o.emitFaces.includes(name)), tex: o.tex && o.tex[name], center: c });
+      out.push({ pts, col: fc, emit: o.emit || (o.emitFaces && o.emitFaces.includes(name)), tex: o.tex && o.tex[name], center: c, bevel: true });
     }
     return out;
   }
 
   // A tube (truncated cone) from p0 to p1, with optional end caps.
   function tube(p0, p1, r0, r1, col, o = {}) {
-    const n = o.sides || 12;
+    const n = (o.sides || 12) * TESS;
     const ax = norm(sub(p1, p0));
     const up = Math.abs(ax[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
     const e1 = norm(cross(ax, up)), e2 = cross(ax, e1);
@@ -74,7 +75,7 @@ const WeaponArt = (() => {
     const a0 = o.phase || 0;
     for (let i = 0; i < n; i++) {
       const a = a0 + i / n * Math.PI * 2, b = a0 + (i + 1) / n * Math.PI * 2;
-      out.push({ pts: [ring(p0, r0, a), ring(p0, r0, b), ring(p1, r1, b), ring(p1, r1, a)], col, emit: o.emit, center: c });
+      out.push({ pts: [ring(p0, r0, a), ring(p0, r0, b), ring(p1, r1, b), ring(p1, r1, a)], col, emit: o.emit, center: c, axis: [p0, p1] });
     }
     const cap = (p, r, cc) => {
       const pts = [];
@@ -191,10 +192,10 @@ const WeaponArt = (() => {
   /* -------------------------------------------------------------- textures */
   function tex(w, h, draw) {
     const c = document.createElement('canvas');
-    c.width = w * 4; c.height = h * 4;
+    c.width = w * TEXS; c.height = h * TEXS;
     const g = c.getContext('2d');
     g.imageSmoothingEnabled = false;
-    g.scale(4, 4);
+    g.scale(TEXS, TEXS);
     draw(g, w, h);
     return c;
   }
@@ -260,6 +261,9 @@ const WeaponArt = (() => {
       ...tube([0.095, 0.11, 0.36], [0.095, 0.11, 0.57], 0.015, 0.015, C.steel, { sides: 8 }),
     ];
     for (let k = 0; k < 5; k++) out.push(...box([0.079, 0.11, 0.39 + k * 0.04], [0.004, 0.011, 0.011], C.silver));
+    // front sight and trigger guard
+    out.push(...box([0.13, 0.1, 0.57], [0.003, 0.005, 0.004], C.silver));
+    out.push(...box([0.13, 0.197, 0.45], [0.004, 0.004, 0.03], C.black), ...box([0.13, 0.18, 0.475], [0.004, 0.018, 0.004], C.black));
     if (loaded) out.push(...box([0.13, 0.13, 0.672], [0.014, 0.014, 0.005], C.silver, { emitFaces: ['back'] }));
     out.push(...arm(1, [0.14, 0.25, 0.4], { pitch: 0.3 }));
     return { faces: out, muzzle: [0.13, 0.13, 0.68] };
@@ -272,6 +276,8 @@ const WeaponArt = (() => {
       ...tube([0.09, 0.135, 0.3], [0.09, 0.135, 0.82], 0.016, 0.016, C.steel, { frontCol: [8, 8, 8] }),
       ...tube([0.13, 0.135, 0.3], [0.13, 0.135, 0.82], 0.016, 0.016, C.steel, { frontCol: [8, 8, 8] }),
       ...box([0.11, 0.118, 0.56], [0.006, 0.004, 0.26], C.dark),
+      ...box([0.11, 0.112, 0.8], [0.004, 0.004, 0.004], C.silver),
+      ...box([0.11, 0.21, 0.36], [0.005, 0.005, 0.035], C.dark),
       ...box([0.11, 0.165, 0.58 + zf], [0.05, 0.022, 0.08], C.wood),
       ...box([0.12, 0.23, 0.3], [0.024, 0.06, 0.03], C.wood, { pitch: 0.4 }),
       ...arm(1, [0.13, 0.27, 0.3], { pitch: 0.35 }),
@@ -382,6 +388,130 @@ const WeaponArt = (() => {
 
 
 
+  /* ------------------------------------------------------- GPU meshes */
+  // MODERN on WebGL2 draws the weapons as real meshes lit by the scene (gl.js).
+  // Same faces, framing and culling as the 2D renders, as triangles in camera space
+  // sorted back to front. Vertex: pos3 nrm3 col3 uv2 edge2 gloss spec flags
+  // (1 emissive, 2 textured, 4 box face: the shader draws bevelled edges from edge2).
+  const VM_STRIDE = 16;
+  function material(c) {
+    if (c === C.skin) return [0.25, 0.12];
+    if (c === C.shirt || c === C.vest) return [0.15, 0.05];
+    if (c === C.glove) return [0.35, 0.2];
+    if (c === C.wood) return [0.4, 0.2];
+    const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
+    const sat = mx ? (mx - mn) / mx : 0;
+    if (sat < 0.25) return mx < 60 ? [0.7, 0.5] : [0.85, 0.9];   // black parts, bare metal
+    return [0.6, 0.4];                                            // painted plastic
+  }
+  // Texture canvases of the faces, packed in rows into one atlas.
+  function newAtlas() {
+    const items = [];
+    return {
+      items,
+      add(tc) {
+        let it = items.find((i) => i.c === tc);
+        if (!it) { it = { c: tc }; items.push(it); }
+        return it;
+      },
+      pack() {
+        const S = 1024, pad = 2;
+        let x = 0, y = 0, rowH = 0;
+        for (const it of items) {
+          if (x + it.c.width + pad > S) { x = 0; y += rowH + pad; rowH = 0; }
+          it.x = x; it.y = y; x += it.c.width + pad; rowH = Math.max(rowH, it.c.height);
+        }
+        const cv = document.createElement('canvas');
+        cv.width = S; cv.height = Math.max(4, 1 << Math.ceil(Math.log2(y + rowH + 1)));
+        const g = cv.getContext('2d');
+        for (const it of items) g.drawImage(it.c, it.x, it.y);
+        for (const it of items) { it.u0 = (it.x + 0.5) / S; it.v0 = (it.y + 0.5) / cv.height; it.u1 = (it.x + it.c.width - 0.5) / S; it.v1 = (it.y + it.c.height - 0.5) / cv.height; }
+        return cv;
+      },
+    };
+  }
+  function mesh(rawFaces, atlas) {
+    const faces = rawFaces.map((f) => ({ ...f, pts: f.pts.map(place), center: place(f.center), axis: f.axis && f.axis.map(place) }));
+    const vis = [];
+    for (const f of faces) {
+      let n = norm(cross(sub(f.pts[1], f.pts[0]), sub(f.pts[2], f.pts[0])));
+      const fc = mul(f.pts.reduce((s, p) => add(s, p), [0, 0, 0]), 1 / f.pts.length);
+      if (dot(n, sub(fc, f.center)) < 0) n = mul(n, -1);
+      if (dot(n, fc) >= 0) continue;
+      if (f.pts.some((p) => p[2] < NEAR)) continue;
+      vis.push({ f, n, z: fc[2] });
+    }
+    vis.sort((a, b) => b.z - a.z);
+    const tris = [];
+    for (const { f, n } of vis) {
+      const it = f.tex ? atlas.add(f.tex) : null;
+      const [gloss, spec] = material(f.col);
+      // bare metal: darker albedo, its look comes from reflections (gl.js)
+      const col = it ? [1, 1, 1] : f.col.map((v) => v / 255 * (spec > 0.8 ? 0.55 : 1));
+      const flags = (f.emit ? 1 : 0) | (it ? 2 : 0) | (f.bevel ? 4 : 0);
+      // tube sides get smooth normals (radial from their axis)
+      let d = null;
+      if (f.axis) d = norm(sub(f.axis[1], f.axis[0]));
+      const nrm = (p) => {
+        if (!d) return n;
+        const v = sub(p, f.axis[0]);
+        const r = norm(sub(v, mul(d, dot(v, d))));
+        return dot(r, n) < 0 ? mul(r, -1) : r;
+      };
+      const corner = [[0, 0], [1, 0], [1, 1], [0, 1]];
+      for (let i = 1; i + 1 < f.pts.length; i++) {
+        for (const k of [0, i, i + 1]) {
+          const p = f.pts[k];
+          const cu = k < 4 ? corner[k][0] : 0, cv = k < 4 ? corner[k][1] : 0;
+          tris.push(p[0], p[1], p[2], ...nrm(p), col[0], col[1], col[2], cu, cv, cu, cv, gloss, spec, flags);
+          if (it) tris.push(it);   // resolved to atlas coordinates once packed
+        }
+      }
+    }
+    return tris;
+  }
+  // Same structure as build(), each pose being {data: Float32Array, view}; plus the texture atlas.
+  function build3D() {
+    PIXEL = false; TESS = 2; TEXS = 8;
+    const atlas = newAtlas();
+    const make = (m, v) => {
+      view = Object.assign({ f: 340, ox: 0, oy: 0 }, v);
+      return { tris: mesh(m.faces || m, atlas), view: { f: view.f, ox: view.ox, oy: view.oy } };
+    };
+    const out = {
+      keyboard: make(keyboard(), VIEWS.keyboard),
+      pistol: [make(nutPistol(true), VIEWS.pistol), make(nutPistol(false), VIEWS.pistol)],
+      shotgun: [make(shotgun(false), VIEWS.shotgun), make(shotgun(true), VIEWS.shotgun)],
+      gatling: [0, 1, 2, 3].map((i) => make(gatling(i / 4 * Math.PI / 3), VIEWS.gatling)),
+      bazooka: [make(bazooka(true), VIEWS.bazooka), make(bazooka(false), VIEWS.bazooka)],
+      hdd: [make(hardDrive(true), VIEWS.hdd), make(hardDrive(false), VIEWS.hdd)],
+      zip: make(zipCompressor(), VIEWS.zip),
+      plasma: make(plasma(), VIEWS.plasma),
+    };
+    TESS = 1; TEXS = 4;
+    const atlasCanvas = atlas.pack();
+    // texture corners -> atlas coordinates
+    const fix = (pose) => {
+      const src = pose.tris, data = [];
+      for (let i = 0; i < src.length;) {
+        const v = src.slice(i, i + VM_STRIDE);
+        i += VM_STRIDE;
+        if (v[15] & 2) {
+          const it = src[i++];
+          v[9] = it.u0 + (it.u1 - it.u0) * v[9];
+          v[10] = it.v0 + (it.v1 - it.v0) * v[10];
+        }
+        data.push(...v);
+      }
+      pose.data = new Float32Array(data);
+      delete pose.tris;
+    };
+    for (const k of Object.keys(out)) [].concat(out[k]).forEach(fix);
+    out.atlas = atlasCanvas;
+    out.stride = VM_STRIDE;
+    return out;
+  }
+
   /* ----------------------------------------------------------- build all */
   // opts: {pixel: false} for MODERN (4 texels per pixel, anti-aliased); {pixel: true, s, sy}
   // for RETRO, rendered straight at the 320x200 resolution (s = 2/3) with the pixels
@@ -401,5 +531,5 @@ const WeaponArt = (() => {
     };
   }
 
-  return { build };
+  return { build, build3D };
 })();

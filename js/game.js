@@ -1299,34 +1299,19 @@ const CAN_FILTER = typeof CanvasRenderingContext2D !== 'undefined' && 'filter' i
 // Draws the weapon held in hand on the high-resolution canvas (logical coordinates).
 // The models are pre-rendered by js/weapons.js; here we only pick the pose and
 // add bobbing, recoil, lighting and the muzzle flash.
-// part: 'all', or for RETRO 'art' (the model, unlit) then 'fx' (flash and glow, full bright).
+// part: 'all', 'art' (the model, unlit: RETRO) or 'fx' (flash and glow, full bright: RETRO,
+// and MODERN on the GPU, where the model itself is a lit mesh drawn by gl.js).
+// pose: the frame's weaponPose(), so that the GPU mesh and the 2D effects agree.
 // Returns whether something was drawn.
-function drawWeapon(g, shx, shy, part = 'all') {
-  if (P.dead) return false;
-  const A = Assets.weapons, t = P.wAnim;
-  const bx = Math.cos(P.bobPhase) * 8 * P.bobAmt + shx;
-  const by = Math.abs(Math.sin(P.bobPhase)) * 6 * P.bobAmt + P.raise * 120 + shy;
-  let art, dx = 0, dy = 0, rot = 0, flash = null;
-  switch (INV.cur) {
-    case 0: {
-      const s = t > 0 ? Math.sin(t * Math.PI) : 0;
-      art = A.keyboard; dx = -s * 120; dy = -s * 40; rot = -s * 0.7;
-      break;
-    }
-    case 1: art = A.pistol[t > 0.4 ? 1 : 0]; dy = t * 14; rot = t * 0.05; flash = ['#fff6b0', '#ffb040', 16]; break;
-    case 2: art = A.shotgun[t > 0.15 && t < 0.75 ? 1 : 0]; dy = t * 20; flash = ['#fff6b0', '#ff7a1a', 30]; break;
-    case 3: art = A.gatling[Math.floor(P.spin / (Math.PI / 12)) % 4]; dy = t * 6 + (firing ? rand(-1, 1) : 0); dx = firing ? rand(-1, 1) : 0; flash = ['#fff6b0', '#ffb040', 20]; break;
-    case 4: art = A.bazooka[t > 0.3 ? 1 : 0]; dy = t * 24; flash = ['#fff6b0', '#ff7a1a', 30]; break;
-    case 5: art = A.hdd[t > 0.25 ? 1 : 0]; dy = t > 0 && t <= 0.25 ? (0.25 - t) * 4 * 70 : 0; break;
-    case 6: art = A.zip; dy = t * 10; break;
-    default: art = A.plasma; dy = t * 8; flash = ['#ffffff', '#3cf', 24]; break;
-  }
+function drawWeapon(g, shx, shy, part = 'all', pose = weaponPose()) {
+  if (!pose) return false;
+  const { art, flash, rot } = pose, t = P.wAnim;
   const lum = Math.min(1.2, L.def.ambient * 0.85 + 0.2 + (P.flashT > 0 ? 0.35 : 0));
   const m = art.muzzle, fx = m && (INV.cur === 7 || INV.cur === 6 || (flash && P.flashT > 0));
   if (part === 'fx' && !fx) return false;
   g.save();
-  g.translate(bx + dx, by + dy);
-  if (rot) { const px = art.x + art.w * 0.85, py = art.y + art.h; g.translate(px, py); g.rotate(rot); g.translate(-px, -py); }
+  g.translate(pose.x + shx, pose.y + shy);
+  if (rot) { g.translate(pose.px, pose.py); g.rotate(rot); g.translate(-pose.px, -pose.py); }
   if (part === 'all' && CAN_FILTER && Math.abs(lum - 1) > 0.02) g.filter = `brightness(${lum.toFixed(2)})`;
   if (part !== 'fx') g.drawImage(art.c, art.x, art.y, art.w, art.h);
   g.filter = 'none';
@@ -1343,6 +1328,31 @@ function drawWeapon(g, shx, shy, part = 'all') {
   }
   g.restore();
   return true;
+}
+
+// Pose of the weapon in hand this frame: which art (pose of the model), its offset
+// (bobbing, raise, recoil) and rotation around a pivot, in logical px; null when dead.
+function weaponPose() {
+  if (P.dead) return null;
+  const A = Assets.weapons, t = P.wAnim;
+  const bx = Math.cos(P.bobPhase) * 8 * P.bobAmt;
+  const by = Math.abs(Math.sin(P.bobPhase)) * 6 * P.bobAmt + P.raise * 120;
+  let art, dx = 0, dy = 0, rot = 0, flash = null;
+  switch (INV.cur) {
+    case 0: {
+      const s = t > 0 ? Math.sin(t * Math.PI) : 0;
+      art = A.keyboard; dx = -s * 120; dy = -s * 40; rot = -s * 0.7;
+      break;
+    }
+    case 1: art = A.pistol[t > 0.4 ? 1 : 0]; dy = t * 14; rot = t * 0.05; flash = ['#fff6b0', '#ffb040', 16]; break;
+    case 2: art = A.shotgun[t > 0.15 && t < 0.75 ? 1 : 0]; dy = t * 20; flash = ['#fff6b0', '#ff7a1a', 30]; break;
+    case 3: art = A.gatling[Math.floor(P.spin / (Math.PI / 12)) % 4]; dy = t * 6 + (firing ? rand(-1, 1) : 0); dx = firing ? rand(-1, 1) : 0; flash = ['#fff6b0', '#ffb040', 20]; break;
+    case 4: art = A.bazooka[t > 0.3 ? 1 : 0]; dy = t * 24; flash = ['#fff6b0', '#ff7a1a', 30]; break;
+    case 5: art = A.hdd[t > 0.25 ? 1 : 0]; dy = t > 0 && t <= 0.25 ? (0.25 - t) * 4 * 70 : 0; break;
+    case 6: art = A.zip; dy = t * 10; break;
+    default: art = A.plasma; dy = t * 8; flash = ['#ffffff', '#3cf', 24]; break;
+  }
+  return { art, flash, rot, x: bx + dx, y: by + dy, px: art.x + art.w * 0.85, py: art.y + art.h };
 }
 
 /* ------------------------------------------------------------------- HUD */
@@ -1481,9 +1491,12 @@ function drawMap(g) {
 
 // The 3D view through the GPU renderer; the 2D canvas over it stays transparent there.
 // dt advances its particles (0 while paused).
+let glPose = null;   // the weapon pose drawn by the GPU this frame (present() adds its 2D effects)
 function renderGL(dt = 0) {
   const sh = P.shake > 0 ? P.shake * 7 : 0;
+  glPose = GLR.hasWeapons ? weaponPose() : null;
   GLR.render({
+    weapon: glPose,
     L, P, inv: INV, anim: animFrame, dt,
     warmBudget: state === 'briefing' ? 30 : 4,   // the briefing screen hides the background work
     shakeX: sh ? rand(-sh, sh) / W : 0, shakeY: sh ? rand(-sh, sh) / VH : 0,
@@ -1504,7 +1517,8 @@ function present() {
   vctx.setTransform(K, 0, 0, K, 0, 0);
   const g = vctx;
   g.save(); g.beginPath(); g.rect(0, 0, W, VH); g.clip();
-  drawWeapon(g, sh ? rand(-sh, sh) / K : 0, sh ? rand(-sh, sh) / K : 0);
+  if (useGL && GLR.hasWeapons) drawWeapon(g, 0, 0, 'fx', glPose);
+  else drawWeapon(g, sh ? rand(-sh, sh) / K : 0, sh ? rand(-sh, sh) / K : 0);
   g.restore();
   g.fillStyle = 'rgba(120,255,140,0.85)';
   g.fillRect(W / 2 - 5, HORIZ - 0.5, 3.5, 1); g.fillRect(W / 2 + 1.5, HORIZ - 0.5, 3.5, 1);
@@ -1758,6 +1772,7 @@ function setStyle(st, quiet) {
   if (hi) setRenderScale(MODERN_SCALE);
   else Retro.init();
   useGL = hi && !glDead && GLR.init(document.getElementById('gl'));
+  if (useGL) GLR.setWeapons(Assets.weaponsHi, Assets.weapons3D);
   if (GLR.canvas) GLR.canvas.style.display = useGL ? 'block' : 'none';
   view.style.background = useGL ? 'transparent' : '';
   Assets.weapons = hi ? Assets.weaponsHi : Assets.weaponsRetro;
@@ -1945,6 +1960,7 @@ function boot() {
   GLR.onLost = () => { glDead = true; setStyle(style, true); };
   Assets.weaponsRetro = WeaponArt.build({ pixel: true, s: 320 / W, sy: 320 / W / 1.2 });
   Assets.weaponsHi = WeaponArt.build({ pixel: false });
+  Assets.weapons3D = WeaponArt.build3D();
   let st = 'modern';
   try { st = localStorage.getItem('dukenutanix.style') || 'modern'; } catch (e) { /* ignored */ }
   setStyle(st, true);

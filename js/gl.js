@@ -259,6 +259,84 @@ const GLR = (() => {
     oColor = vec4(uRaw > 0.5 ? c : tonemap(c), t.a);
   }`;
 
+  // The weapon in hand: a mesh in camera space (weapons.js build3D), projected with
+  // its own framing (focal f and vanishing point, in the 480x230 logical view) so that it
+  // matches the 2D renders, moved by bobbing and recoil in screen space, and lit in
+  // world space by the same lights as the scene. Its depth is written as if it were
+  // in the world (K world units per meter) so that the post-processing sees it.
+  const VM_VS = `#version 300 es
+  layout(location=0) in vec3 aPos;
+  layout(location=1) in vec3 aNrm;
+  layout(location=2) in vec3 aCol;
+  layout(location=3) in vec2 aUv;
+  layout(location=4) in vec3 aMat;
+  layout(location=5) in vec2 aEdge;
+  uniform vec4 uProj;     // focal, vanishing point x, y (logical px)
+  uniform vec4 uMove;     // offset x, y (logical px), rotation, unused
+  uniform vec2 uPivot;    // rotation pivot (logical px)
+  uniform vec2 uAB;       // world projection depth terms
+  uniform vec2 uJitter;
+  uniform vec3 uEye, uRw, uDw, uFw;
+  uniform float uK;
+  out vec3 vPos; out vec3 vNrm; out vec3 vCol; out vec2 vUv; out vec2 vEdge; out vec3 vLoc; flat out vec3 vMat;
+  void main() {
+    vEdge = aEdge; vLoc = aPos;
+    vec2 s = uProj.yz + uProj.x * aPos.xy / aPos.z;
+    vec2 q = s - uPivot;
+    float c = cos(uMove.z), sn = sin(uMove.z);
+    s = vec2(c * q.x - sn * q.y, sn * q.x + c * q.y) + uPivot + uMove.xy;
+    float z = aPos.z * uK;
+    gl_Position = vec4(vec2(s.x / 240.0 - 1.0, 1.0 - s.y / 115.0) * z, uAB.x * z + uAB.y, z);
+    gl_Position.xy += uJitter * z;
+    vPos = uEye + (uRw * aPos.x + uDw * aPos.y + uFw * aPos.z) * uK;
+    vNrm = uRw * aNrm.x + uDw * aNrm.y + uFw * aNrm.z;
+    vCol = aCol; vUv = aUv; vMat = aMat;
+  }`;
+
+  const VM_FS = `#version 300 es
+  precision highp float;
+  in vec3 vPos; in vec3 vNrm; in vec3 vCol; in vec2 vUv; in vec2 vEdge; in vec3 vLoc; flat in vec3 vMat;
+  uniform sampler2D uAtlas;
+  uniform vec3 uRw, uDw, uFw;
+  ${LIGHTING}
+  out vec4 oColor;
+  float h3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+  void main() {
+    int fl = int(vMat.z + 0.5);
+    vec3 alb = pow(vCol, vec3(2.2));
+    if ((fl & 2) != 0) alb *= texture(uAtlas, vUv).rgb;
+    // fine grain on the surfaces (cast metal, plastic)
+    alb *= 0.94 + 0.06 * h3(floor(vLoc * 900.0));
+    vec3 N = normalize(vNrm), c;
+    vec3 V = normalize(uEye - vPos);
+    // bevelled box edges: a dark seam, then a thin highlight catching the light
+    float edge = 1e3;
+    if ((fl & 4) != 0) {
+      vec2 e = min(vEdge, 1.0 - vEdge) / max(fwidth(vEdge), vec2(1e-5));
+      edge = min(e.x, e.y);
+    }
+    if ((fl & 1) != 0) c = alb * uEmissive * 1.5;
+    else {
+      float gloss = vMat.x, spec = vMat.y, shin = mix(8.0, 110.0, gloss);
+      c = shade(alb, N, vPos, uEye.xy, gloss, spec, 0.2) * 0.75;
+      // key light from above and to the left of the view, in the color of the room's light:
+      // gives every part of the model its own shade, like a studio light
+      vec3 lc = texture(uLightA, uEye.xy / uMapSize).rgb * 0.6 + uAmbient * 0.7 + 0.02;
+      vec3 K = normalize(-uRw * 0.35 - uDw * 0.9 + uFw * 0.25);
+      float nk = max(dot(N, K), 0.0);
+      c += lc * (alb * (0.15 + 0.85 * nk) + spec * lobe(N, K, V, shin) * nk * 0.8);
+      // shiny parts reflect the room: bright ceiling panels above, dark floor below
+      vec3 R = reflect(-V, N);
+      float fr = 0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+      vec3 env = lc * (0.25 + 2.2 * smoothstep(0.1, 0.9, R.z) + 0.6 * smoothstep(0.6, 0.95, abs(dot(R, uRw))));
+      c += env * spec * mix(0.25, 1.0, fr) * gloss * 0.6;
+      // rim light along the silhouette
+      c += lc * alb * pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.6;
+      if (edge < 3.0) c *= mix(0.45, 1.0 + 0.6 * nk, smoothstep(0.6, 1.6, edge)) * (edge < 1.6 ? 1.0 : mix(1.25, 1.0, smoothstep(1.6, 3.0, edge)));
+    }
+    oColor = vec4(uRaw > 0.5 ? c : tonemap(c), 1.0);
+  }`;
+
   function compile(vs, fs) {
     const mk = (type, src) => {
       const s = gl.createShader(type);
@@ -1259,8 +1337,70 @@ const GLR = (() => {
     gl.disable(gl.BLEND);
   }
 
+  // Weapon meshes: one buffer for every pose; vmMap: 2D art of a pose -> its vertex range.
+  const VM_K = 0.4;
+  let progVM = null, vmVAO = null, vmAtlas = null, vmMap = new Map();
+  function setWeapons(art2D, meshes) {
+    if (!ok || !meshes) return;
+    const ranges = [], parts = [];
+    let n = 0;
+    const walk = (a, m) => {
+      if (Array.isArray(a)) { a.forEach((x, i) => walk(x, m[i])); return; }
+      const count = m.data.length / meshes.stride;
+      ranges.push([a, { first: n, count, view: m.view }]);
+      parts.push(m.data); n += count;
+    };
+    for (const k of Object.keys(art2D)) if (meshes[k]) walk(art2D[k], meshes[k]);
+    const all = new Float32Array(n * meshes.stride);
+    let o = 0;
+    for (const p of parts) { all.set(p, o); o += p.length; }
+    vmVAO = gl.createVertexArray();
+    gl.bindVertexArray(vmVAO);
+    const vb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+    gl.bufferData(gl.ARRAY_BUFFER, all, gl.STATIC_DRAW);
+    const st = meshes.stride * 4;
+    [[0, 3, 0], [1, 3, 3], [2, 3, 6], [3, 2, 9], [5, 2, 11], [4, 3, 13]].forEach(([loc, size, off]) => {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, st, off * 4);
+    });
+    gl.bindVertexArray(null);
+    vmAtlas = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, vmAtlas);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, meshes.atlas);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    vmMap = new Map(ranges);
+  }
+
+  // w: {art (the 2D art of the pose), x, y (offset), rot, px, py (pivot)}, in logical px.
+  function drawWeapon(L, w) {
+    const m = w && vmMap.get(w.art);
+    if (!m) return;
+    gl.useProgram(progVM.p);
+    setCommon(progVM, L, false);
+    const u = progVM.u;
+    gl.uniform4f(u.uProj, m.view.f, 240 + m.view.ox, 115 + m.view.oy, 0);
+    gl.uniform4f(u.uMove, w.x, w.y, w.rot, 0);
+    gl.uniform2f(u.uPivot, w.px, w.py);
+    gl.uniform2f(u.uAB, (FAR + NEAR) / (FAR - NEAR), -2 * FAR * NEAR / (FAR - NEAR));
+    gl.uniform3f(u.uRw, cam.r[0], cam.r[1], cam.r[2]);
+    gl.uniform3f(u.uDw, -cam.u[0], -cam.u[1], -cam.u[2]);
+    gl.uniform3f(u.uFw, cam.f[0], cam.f[1], cam.f[2]);
+    gl.uniform1f(u.uK, VM_K);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, vmAtlas); gl.uniform1i(u.uAtlas, 0);
+    // always in front of the world; its triangles come sorted back to front
+    gl.depthFunc(gl.ALWAYS);
+    gl.bindVertexArray(vmVAO);
+    gl.drawArrays(gl.TRIANGLES, m.first, m.count);
+    gl.depthFunc(gl.LEQUAL);
+  }
+
   let reflOn = false;
-  // f: {L, P, inv, anim, collect(add), shakeX, shakeY (fractions of the view)}
+  // f: {L, P, inv, anim, collect(add), shakeX, shakeY (fractions of the view), weapon (see drawWeapon)}
   function render(f) {
     const L = f.L, P = f.P;
     if (L !== curL) setLevel(L);
@@ -1315,6 +1455,7 @@ const GLR = (() => {
     drawShadows();
     drawSprites(L, false);
     drawParticles(false, false);
+    drawWeapon(L, f.weapon);
     gl.bindVertexArray(null);
     if (hdr) post(L, P);
   }
@@ -1345,7 +1486,7 @@ const GLR = (() => {
   vec3 vpos(vec2 uv) { float z = linZ(textureLod(uDepth, uv, 0.0).r); return vec3((uv * 2.0 - 1.0) * uTan * z, z); }
   void main() {
     vec3 P = vpos(vUv);
-    if (P.z > 40.0) { oColor = vec4(1.0); return; }
+    if (P.z > 40.0 || P.z < 0.42) { oColor = vec4(1.0); return; }   // sky, or the weapon in hand
     vec3 px = vpos(vUv + vec2(uPx.x, 0.0)) - P, nx = P - vpos(vUv - vec2(uPx.x, 0.0));
     vec3 py = vpos(vUv + vec2(0.0, uPx.y)) - P, ny = P - vpos(vUv - vec2(0.0, uPx.y));
     vec3 dx = dot(px, px) < dot(nx, nx) ? px : nx, dy = dot(py, py) < dot(ny, ny) ? py : ny;
@@ -1711,6 +1852,7 @@ const GLR = (() => {
       floatOK = !!gl.getExtension('EXT_color_buffer_float');
       progWorld = compile(WORLD_VS, WORLD_FS);
       progSprite = compile(SPRITE_VS, SPRITE_FS);
+      progVM = compile(VM_VS, VM_FS);
       initPost();
       buildWallArray();
       texSprites = newArray(SPR_CAP, gl.SRGB8_ALPHA8);
@@ -1763,6 +1905,9 @@ const GLR = (() => {
     retile(L) { if (ok && L === curL) buildWorld(L); },
     // finishes the background work at once (automated tests)
     flushWarm() { if (curL) warmUp(curL, 1e9); },
+    // the weapon meshes (weapons.js build3D), keyed by the 2D art of each pose
+    setWeapons(art2D, meshes) { if (ok && !vmMap.size) setWeapons(art2D, meshes); },
+    get hasWeapons() { return ok && vmMap.size > 0; },
     get ok() { return ok; },
     get hdr() { return hdr; },
     get canvas() { return cv; },
