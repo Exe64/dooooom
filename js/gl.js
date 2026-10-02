@@ -46,7 +46,7 @@ const GLR = (() => {
   let worldVAO = null, worldCount = 0, floorCount = 0, worldBufs = [];
   let doorVAO = null, doorVBO = null, doorIBO = null, doorCount = 0;
   let spriteVAO = null, spriteInst = null;
-  let texDetail = null;
+  let texDetail = null, texHgt = null;
   let texWalls = null, texNrm = null, texSprites = null, texSprNrm = null, texLightA = null, texLightB = null, texCells = null, texBlack = null;
   let reflFBO = null, reflTex = null, reflDepth = null, rw = 0, rh = 0;
   let aniso = null, floatOK = false;
@@ -58,6 +58,7 @@ const GLR = (() => {
   const KIND_WALL = 0, KIND_FLOOR = 1, KIND_CEIL = 2, KIND_DOOR = 3;
   const LG2 = 8;                         // lightmap texels per map cell
   const MAX_DL = 16;                     // dynamic lights per frame
+  const POM_DEPTH = 0.045;               // deepest parallax relief (tile units), see normalMap()
 
   /* ------------------------------------------------------------ shaders */
   const WORLD_VS = `#version 300 es
@@ -177,23 +178,52 @@ const GLR = (() => {
   precision highp sampler2DArray;
   in vec3 vPos; in vec2 vUv; in vec3 vNrm; in vec3 vTan;
   flat in float vLayer; flat in float vKind;
-  uniform sampler2DArray uTex, uNrm;
+  uniform sampler2DArray uTex, uNrm, uHgt;
   uniform sampler2D uRefl, uDetail;
+  uniform float uPom;
+
+  // Parallax occlusion mapping: walks the view ray down into the height field
+  // (racks' slots, door ribs, floor tiles) and returns where it hits.
+  vec2 pom(vec2 uv, float layer, vec3 Vts, float fade) {
+    vec2 dx = dFdx(uv), dy = dFdy(uv);
+    const int N = 14;
+    float stepH = 1.0 / float(N);
+    vec2 dUv = -Vts.xy / max(Vts.z, 0.2) * ${POM_DEPTH} * fade * stepH;
+    float cur = 1.0, h = textureGrad(uHgt, vec3(uv, layer), dx, dy).r, prevH = h;
+    vec2 p = uv;
+    for (int i = 0; i < N; i++) {
+      if (cur <= h) break;
+      prevH = h;
+      p += dUv; cur -= stepH;
+      h = textureGrad(uHgt, vec3(p, layer), dx, dy).r;
+    }
+    // linear refinement between the last two samples
+    float a = h - cur, b = prevH - (cur + stepH);
+    float w = a / max(a - b, 1e-4);
+    return mix(p, p - dUv, clamp(w, 0.0, 1.0));
+  }
   uniform float uReflOn;
   uniform vec2 uViewport;
   ${LIGHTING}
   out vec4 oColor;
   void main() {
-    vec3 uvl = vec3(vUv, vLayer);
-    vec4 t = texture(uTex, uvl);
-    vec4 nm = texture(uNrm, uvl);
     vec3 Ng = normalize(vNrm), T = normalize(vTan);
     vec3 B = vKind == 1.0 || vKind == 2.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, -1.0);
+    vec2 uv = vUv;
+    float dist = length(uEye - vPos);
+    float pf = uPom * (1.0 - smoothstep(5.0, 8.0, dist));
+    if (pf > 0.0) {
+      vec3 V0 = normalize(uEye - vPos);
+      uv = pom(vUv, vLayer, vec3(dot(V0, T), dot(V0, B), dot(V0, Ng)), pf);
+    }
+    vec3 uvl = vec3(uv, vLayer);
+    vec4 t = texture(uTex, uvl);
+    vec4 nm = texture(uNrm, uvl);
     vec2 nxy = nm.rg * 2.0 - 1.0;
     // up close, the detail map adds grain and micro relief (not on emissive texels)
     float near = (1.0 - smoothstep(1.2, 3.5, length(uEye - vPos))) * (1.0 - t.a);
     if (near > 0.0) {
-      vec4 dt = texture(uDetail, vUv * 5.0);
+      vec4 dt = texture(uDetail, uv * 5.0);
       t.rgb *= 1.0 + (dt.r - 0.5) * 0.22 * near;
       nxy += (dt.gb - 0.5) * 0.35 * near;
     }
@@ -426,12 +456,12 @@ const GLR = (() => {
 
   // Surface response per wall tile: [bump strength, gloss, specular].
   const MATERIALS = {
-    concrete: [1.1, 0.16, 0.12], rack: [2.6, 0.62, 0.55], door: [2.2, 0.5, 0.5], crac: [2.2, 0.5, 0.45],
-    warn: [1.4, 0.3, 0.2], exit: [1.8, 0.4, 0.3], floor: [1.2, 0.78, 0.6], perf: [2.2, 0.66, 0.55], ceil: [1.2, 0.22, 0.12],
+    // bump strength, gloss, specular, parallax depth (tile units: 1 = the wall's height)
+    concrete: [1.1, 0.16, 0.12, 0.012], rack: [2.6, 0.62, 0.55, 0.045], door: [2.2, 0.5, 0.5, 0.03], crac: [2.2, 0.5, 0.45, 0.035],
+    warn: [1.4, 0.3, 0.2, 0.012], exit: [1.8, 0.4, 0.3, 0.02], floor: [1.2, 0.78, 0.6, 0.008], perf: [2.2, 0.66, 0.55, 0.014], ceil: [1.2, 0.22, 0.12, 0.012],
   };
   const TILE_MAT = { '#': 'concrete', '?': 'concrete', W: 'warn', R: 'rack', S: 'rack', N: 'rack', C: 'crac', D: 'door', 1: 'door', 2: 'door', X: 'exit' };
 
-  // Normal (rg), gloss (b) and specular (a) maps, from the texture's luminance as a height field.
   // Detail map, tiled several times per texture and faded in up close: fine grain and
   // micro relief so that surfaces don't turn into smooth blur when the player
   // walks up to them. r: albedo variation, g/b: normal perturbation (wrapping value noise).
@@ -467,11 +497,14 @@ const GLR = (() => {
   // Walls and flats are drawn again at GT for the GPU: twice the resolution of the
   // software renderer, so that they stay sharp up close.
   const GT = 512;
-  function normalMap(t, mat, size) {
+  // Normal (rg), gloss (b) and specular (a) maps, from the texture's luminance as a height field.
+  // hgt (optional): the height field for parallax mapping, 255 = surface, 0 = POM_DEPTH deep,
+  // scaled by the material's depth (racks and doors are deep, concrete and floors shallow).
+  function normalMap(t, mat, size, hgt) {
     const m = MATERIALS[mat];
-    return heightNormals(t.px, t.em, size, size, m[0] * size / TS, m[1], m[2]);
+    return heightNormals(t.px, t.em, size, size, m[0] * size / TS, m[1], m[2], hgt, m[3] / POM_DEPTH);
   }
-  function heightNormals(px, em, W, H, S, gl0, sp0) {
+  function heightNormals(px, em, W, H, S, gl0, sp0, hgt, depth) {
     const n = W * H, lum = new Float32Array(n), h = new Float32Array(n);
     for (let i = 0; i < n; i++) { const c = px[i]; lum[i] = ((c & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + ((c >> 16) & 255) * 0.11) / 255; }
     // wrapped neighbor columns and rows (the textures tile)
@@ -486,6 +519,13 @@ const GLR = (() => {
     };
     const tmp = new Float32Array(n);
     blur(lum, tmp); blur(tmp, h);
+    if (hgt) {
+      let lo = 1, hi = 0;
+      for (let i = 0; i < n; i++) { if (h[i] < lo) lo = h[i]; if (h[i] > hi) hi = h[i]; }
+      const k = hi - lo > 1e-3 ? 1 / (hi - lo) : 0;
+      // emissive texels (screens, LEDs) stay flat: their text must not slide
+      for (let i = 0; i < n; i++) hgt[i] = em && em[i] ? 255 : (1 - (1 - (h[i] - lo) * k) * depth) * 255 + 0.5;
+    }
     const out = new Uint8Array(n * 4);
     for (let y = 0; y < H; y++) {
       const r = y * W, u = yu[y], d = yd[y];
@@ -519,15 +559,21 @@ const GLR = (() => {
     Assets.ceil.forEach((t) => reg(t, 'ceil'));
     texWalls = newArray(list.length, gl.SRGB8_ALPHA8, GT);
     texNrm = newArray(list.length, gl.RGBA8, GT);
+    texHgt = newArray(list.length, gl.R8, GT);
     list.forEach(([t0, mat], i) => {
       const t = t0.hires ? t0.hires(GT) : t0, size = t0.hires ? GT : TS;
       const rgba = new Uint8Array(t.px.buffer.slice(0));
       for (let k = 0; k < t.em.length; k++) rgba[k * 4 + 3] = t.em[k] ? 255 : 0;
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls);
       gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      const hgt = new Uint8Array(size * size);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm);
-      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, normalMap(t, mat, size));
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, normalMap(t, mat, size, hgt));
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, texHgt);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, size, size, 1, gl.RED, gl.UNSIGNED_BYTE, hgt);
     });
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texHgt);
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls);
     gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm);
@@ -738,6 +784,48 @@ const GLR = (() => {
     pushQuad(V, I, [[ax, ay, 1], [bx, by, 1], [bx, by, 0], [ax, ay, 0]], [[u0, 0], [u1, 0], [u1, 1], [u0, 1]], n, [t[0] / l, t[1] / l, 0], tex);
   }
 
+  // An axis-aligned box (no bottom face), textured with the rectangle r = [u0, v0, u1, v1] of a layer.
+  function pushBox(V, I, x0, y0, z0, x1, y1, z1, r, tex) {
+    const [u0, v0, u1, v1] = r, uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    pushQuad(V, I, [[x1, y1, z1], [x1, y0, z1], [x1, y0, z0], [x1, y1, z0]], uv, [1, 0, 0], [0, -1, 0], tex);
+    pushQuad(V, I, [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]], uv, [-1, 0, 0], [0, 1, 0], tex);
+    pushQuad(V, I, [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], uv, [0, 1, 0], [1, 0, 0], tex);
+    pushQuad(V, I, [[x1, y0, z1], [x0, y0, z1], [x0, y0, z0], [x1, y0, z0]], uv, [0, -1, 0], [-1, 0, 0], tex);
+    pushQuad(V, I, [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], uv, [0, 0, 1], [1, 0, 0], tex);
+  }
+
+  // Trims: a baseboard along the concrete walls, and jambs framing the doors.
+  const BASE_H = 0.045, BASE_D = 0.014, JAMB_W = 0.05, JAMB_D = 0.035;
+  function pushTrims(V, I, L) {
+    const w = L.w, h = L.h, solid = (x, y) => solidAt(L, x, y);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, t = L.map[i];
+      if (!t || L.doors[i] || String.fromCharCode(t) !== '#') continue;
+      const tex = [wallFrames(L, i)[0].glLayer, 1, 0, KIND_WALL], r = [0, 0.94, 1, 1];
+      if (!solid(x + 1, y)) pushBox(V, I, x + 1, y, 0, x + 1 + BASE_D, y + 1, BASE_H, r, tex);
+      if (!solid(x - 1, y)) pushBox(V, I, x - BASE_D, y, 0, x, y + 1, BASE_H, r, tex);
+      if (!solid(x, y + 1)) pushBox(V, I, x, y + 1, 0, x + 1, y + 1 + BASE_D, BASE_H, r, tex);
+      if (!solid(x, y - 1)) pushBox(V, I, x, y - BASE_D, 0, x + 1, y, BASE_H, r, tex);
+    }
+    for (const d of L.doorList) {
+      if (d.secret) continue;
+      const i = d.y * w + d.x, tex = [wallFrames(L, i)[0].glLayer, 1, 0, KIND_WALL], r = [0, 0, 0.08, 1];
+      const x = d.x, y = d.y;
+      // a frame on both faces of the wall: two jambs standing out of each face
+      if (solid(x - 1, y) && solid(x + 1, y)) {        // passage north-south
+        for (const [y0, y1] of [[y - JAMB_D, y], [y + 1, y + 1 + JAMB_D]]) {
+          pushBox(V, I, x - JAMB_W, y0, 0, x + JAMB_W, y1, 1, r, tex);
+          pushBox(V, I, x + 1 - JAMB_W, y0, 0, x + 1 + JAMB_W, y1, 1, r, tex);
+        }
+      } else {                                          // passage east-west
+        for (const [x0, x1] of [[x - JAMB_D, x], [x + 1, x + 1 + JAMB_D]]) {
+          pushBox(V, I, x0, y - JAMB_W, 0, x1, y + JAMB_W, 1, r, tex);
+          pushBox(V, I, x0, y + 1 - JAMB_W, 0, x1, y + 1 + JAMB_W, 1, r, tex);
+        }
+      }
+    }
+  }
+
   function makeVAO(V, I, dynamic) {
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -775,6 +863,7 @@ const GLR = (() => {
       if (!solidAt(L, x, y + 1)) pushWall(V, I, x, y + 1, x + 1, y + 1, 0, 1, [0, 1, 0], tex);
       if (!solidAt(L, x, y - 1)) pushWall(V, I, x + 1, y, x, y, 0, 1, [0, -1, 0], tex);
     }
+    pushTrims(V, I, L);
     const m = makeVAO(new Float32Array(V), new Uint32Array(IF.concat(I)), false);
     worldVAO = m.vao; worldBufs = [m.vb, m.ib]; worldCount = IF.length + I.length; floorCount = IF.length;
   }
@@ -1391,6 +1480,8 @@ const GLR = (() => {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm); gl.uniform1i(u.uNrm, 1);
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, !mirror && reflOn ? reflTex : texBlack); gl.uniform1i(u.uRefl, 5);
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, texDetail); gl.uniform1i(u.uDetail, 6);
+    gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texHgt); gl.uniform1i(u.uHgt, 7);
+    gl.uniform1f(u.uPom, !mirror && Light.high ? 1 : 0);
     gl.bindVertexArray(worldVAO);
     if (mirror) gl.drawElements(gl.TRIANGLES, worldCount - floorCount, gl.UNSIGNED_INT, floorCount * 4);
     else gl.drawElements(gl.TRIANGLES, worldCount, gl.UNSIGNED_INT, 0);
