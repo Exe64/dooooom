@@ -108,9 +108,11 @@ Push a version tag and GitHub Actions does the rest (`.github/workflows/release.
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
+or, without git: Actions, Release, Run workflow, and type the version (`1.0.0`); the release then creates the tag.
+
 It checks the levels, zips the web version, builds the desktop apps on Windows, macOS and Linux,
 attaches everything to a draft release and publishes it once all builds succeed.
-Running the workflow by hand (Actions, Release, Run workflow) builds the same files as run artifacts, without a release.
+Running the workflow by hand with no version builds the same files as run artifacts, without a release.
 
 Auto-update needs an update signing key, separate from any Windows or Apple certificate. Create it once:
 
