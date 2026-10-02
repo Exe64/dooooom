@@ -716,6 +716,7 @@ dependencies = [
 name = "duke-nutanix"
 version = "1.0.0"
 dependencies = [
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-process",
