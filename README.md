@@ -79,8 +79,8 @@ Grab the latest version from the [Releases page](../../releases/latest):
 | Linux | `.AppImage` (any distribution), `.deb` (Debian, Ubuntu), `.rpm` (Fedora) |
 | Any browser, no install | `duke-nutanix-*-web.zip`: unzip and open `index.html` |
 
-The desktop apps are small (a few MB): they wrap the game in the system's web view (WebView2 on Windows,
-WebKit on macOS and Linux) with [Tauri](https://tauri.app). They are not signed with a paid certificate yet:
+The desktop apps wrap the game in the system's web view (WebView2 on Windows, WebKit on macOS and Linux)
+with [Tauri](https://tauri.app), so they stay small: a few MB, except the AppImage (about 80 MB) which carries its own WebKit. They are not signed with a paid certificate yet:
 - **Windows**: SmartScreen shows "Windows protected your PC": click **More info** then **Run anyway**.
 - **macOS**: if it says the app is damaged or cannot be checked, move it to Applications and run
   `xattr -cr "/Applications/Duke Nutanix.app"` in a Terminal, or right-click the app and choose **Open**.
