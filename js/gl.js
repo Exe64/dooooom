@@ -46,6 +46,7 @@ const GLR = (() => {
   let worldVAO = null, worldCount = 0, floorCount = 0, worldBufs = [];
   let doorVAO = null, doorVBO = null, doorIBO = null, doorCount = 0;
   let spriteVAO = null, spriteInst = null;
+  let texDetail = null;
   let texWalls = null, texNrm = null, texSprites = null, texSprNrm = null, texLightA = null, texLightB = null, texCells = null, texBlack = null;
   let reflFBO = null, reflTex = null, reflDepth = null, rw = 0, rh = 0;
   let aniso = null, floatOK = false;
@@ -177,7 +178,7 @@ const GLR = (() => {
   in vec3 vPos; in vec2 vUv; in vec3 vNrm; in vec3 vTan;
   flat in float vLayer; flat in float vKind;
   uniform sampler2DArray uTex, uNrm;
-  uniform sampler2D uRefl;
+  uniform sampler2D uRefl, uDetail;
   uniform float uReflOn;
   uniform vec2 uViewport;
   ${LIGHTING}
@@ -189,6 +190,13 @@ const GLR = (() => {
     vec3 Ng = normalize(vNrm), T = normalize(vTan);
     vec3 B = vKind == 1.0 || vKind == 2.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, -1.0);
     vec2 nxy = nm.rg * 2.0 - 1.0;
+    // up close, the detail map adds grain and micro relief (not on emissive texels)
+    float near = (1.0 - smoothstep(1.2, 3.5, length(uEye - vPos))) * (1.0 - t.a);
+    if (near > 0.0) {
+      vec4 dt = texture(uDetail, vUv * 5.0);
+      t.rgb *= 1.0 + (dt.r - 0.5) * 0.22 * near;
+      nxy += (dt.gb - 0.5) * 0.35 * near;
+    }
     vec3 N = normalize(T * nxy.x + B * nxy.y + Ng * sqrt(max(0.0, 1.0 - dot(nxy, nxy))));
     float gloss = nm.b, spec = nm.a;
     vec2 lp = vPos.xy + Ng.xy * (0.5 / ${LG2}.0);
@@ -318,20 +326,21 @@ const GLR = (() => {
     if ((fl & 1) != 0) c = alb * uEmissive * 1.5;
     else {
       float gloss = vMat.x, spec = vMat.y, shin = mix(8.0, 110.0, gloss);
-      c = shade(alb, N, vPos, uEye.xy, gloss, spec, 0.2) * 0.75;
+      c = shade(alb, N, vPos, uEye.xy, gloss, spec, 0.2) * 0.55;
       // key light from above and to the left of the view, in the color of the room's light:
       // gives every part of the model its own shade, like a studio light
       vec3 lc = texture(uLightA, uEye.xy / uMapSize).rgb * 0.6 + uAmbient * 0.7 + 0.02;
       vec3 K = normalize(-uRw * 0.35 - uDw * 0.9 + uFw * 0.25);
       float nk = max(dot(N, K), 0.0);
-      c += lc * (alb * (0.15 + 0.85 * nk) + spec * lobe(N, K, V, shin) * nk * 0.8);
+      c += lc * (alb * (0.12 + 0.55 * nk) + spec * lobe(N, K, V, shin) * nk * 0.6);
       // shiny parts reflect the room: bright ceiling panels above, dark floor below
       vec3 R = reflect(-V, N);
       float fr = 0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
       vec3 env = lc * (0.25 + 2.2 * smoothstep(0.1, 0.9, R.z) + 0.6 * smoothstep(0.6, 0.95, abs(dot(R, uRw))));
-      c += env * spec * mix(0.25, 1.0, fr) * gloss * 0.6;
+      c += env * spec * mix(0.25, 1.0, fr) * gloss * (spec > 0.7 ? 0.6 : 0.15);
       // rim light along the silhouette
       c += lc * alb * pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.6;
+      c *= 0.72;   // held below the lamps: keeps its colors through the tone curve
       if (edge < 3.0) c *= mix(0.45, 1.0 + 0.6 * nk, smoothstep(0.6, 1.6, edge)) * (edge < 1.6 ? 1.0 : mix(1.25, 1.0, smoothstep(1.6, 3.0, edge)));
     }
     oColor = vec4(uRaw > 0.5 ? c : tonemap(c), 1.0);
@@ -423,32 +432,78 @@ const GLR = (() => {
   const TILE_MAT = { '#': 'concrete', '?': 'concrete', W: 'warn', R: 'rack', S: 'rack', N: 'rack', C: 'crac', D: 'door', 1: 'door', 2: 'door', X: 'exit' };
 
   // Normal (rg), gloss (b) and specular (a) maps, from the texture's luminance as a height field.
-  function normalMap(t, mat) { return heightNormals(t.px, t.em, TS, TS, ...MATERIALS[mat]); }
+  // Detail map, tiled several times per texture and faded in up close: fine grain and
+  // micro relief so that surfaces don't turn into smooth blur when the player
+  // walks up to them. r: albedo variation, g/b: normal perturbation (wrapping value noise).
+  function detailTexture() {
+    const N = 256, n = N * N, h = new Float32Array(n);
+    const R = rng(4242);
+    for (const [cell, amp] of [[64, 0.5], [32, 0.25], [16, 0.15], [8, 0.07], [4, 0.03]]) {
+      const g = N / cell, v = new Float32Array(g * g).map(() => R());
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        const fx = x / cell, fy = y / cell, x0 = Math.floor(fx), y0 = Math.floor(fy);
+        const tx = fx - x0, ty = fy - y0, sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+        const at = (i, j) => v[((j + g) % g) * g + ((i + g) % g)];
+        const a = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx, b = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx;
+        h[y * N + x] += (a + (b - a) * sy) * amp;
+      }
+    }
+    const out = new Uint8Array(n * 4), at = (x, y) => h[((y + N) % N) * N + ((x + N) % N)];
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const i = (y * N + x) * 4;
+      out[i] = Math.round(Math.min(1, h[y * N + x]) * 255);
+      out[i + 1] = Math.round(Math.max(0, Math.min(1, 0.5 + (at(x - 1, y) - at(x + 1, y)) * 6)) * 255);
+      out[i + 2] = Math.round(Math.max(0, Math.min(1, 0.5 + (at(x, y - 1) - at(x, y + 1)) * 6)) * 255);
+      out[i + 3] = 255;
+    }
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    tex2D(t, gl.LINEAR_MIPMAP_LINEAR, gl.REPEAT);
+    return t;
+  }
+
+  // Walls and flats are drawn again at GT for the GPU: twice the resolution of the
+  // software renderer, so that they stay sharp up close.
+  const GT = 512;
+  function normalMap(t, mat, size) {
+    const m = MATERIALS[mat];
+    return heightNormals(t.px, t.em, size, size, m[0] * size / TS, m[1], m[2]);
+  }
   function heightNormals(px, em, W, H, S, gl0, sp0) {
     const n = W * H, lum = new Float32Array(n), h = new Float32Array(n);
     for (let i = 0; i < n; i++) { const c = px[i]; lum[i] = ((c & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + ((c >> 16) & 255) * 0.11) / 255; }
-    const at = (a, x, y) => a[((y + H) % H) * W + ((x + W) % W)];
+    // wrapped neighbor columns and rows (the textures tile)
+    const xl = new Int32Array(W), xr = new Int32Array(W), yu = new Int32Array(H), yd = new Int32Array(H);
+    for (let x = 0; x < W; x++) { xl[x] = (x + W - 1) % W; xr[x] = (x + 1) % W; }
+    for (let y = 0; y < H; y++) { yu[y] = ((y + H - 1) % H) * W; yd[y] = ((y + 1) % H) * W; }
     const blur = (src, dst) => {
-      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        dst[y * W + x] = (at(src, x, y) * 4 + at(src, x - 1, y) + at(src, x + 1, y) + at(src, x, y - 1) + at(src, x, y + 1)) / 8;
+      for (let y = 0; y < H; y++) {
+        const r = y * W, u = yu[y], d = yd[y];
+        for (let x = 0; x < W; x++) dst[r + x] = (src[r + x] * 4 + src[r + xl[x]] + src[r + xr[x]] + src[u + x] + src[d + x]) * 0.125;
       }
     };
     const tmp = new Float32Array(n);
     blur(lum, tmp); blur(tmp, h);
     const out = new Uint8Array(n * 4);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const i = y * W + x, o = i * 4;
-      if (em && em[i]) { out[o] = 128; out[o + 1] = 128; out[o + 2] = 230; out[o + 3] = 150; continue; }
-      const gx = (at(h, x + 1, y - 1) + 2 * at(h, x + 1, y) + at(h, x + 1, y + 1)) - (at(h, x - 1, y - 1) + 2 * at(h, x - 1, y) + at(h, x - 1, y + 1));
-      const gy = (at(h, x - 1, y + 1) + 2 * at(h, x, y + 1) + at(h, x + 1, y + 1)) - (at(h, x - 1, y - 1) + 2 * at(h, x, y - 1) + at(h, x + 1, y - 1));
-      let nx = -gx * S, ny = -gy * S;
-      const l = Math.hypot(nx, ny, 1);
-      nx /= l; ny /= l;
-      const v = lum[i];
-      out[o] = Math.round((nx * 0.5 + 0.5) * 255);
-      out[o + 1] = Math.round((ny * 0.5 + 0.5) * 255);
-      out[o + 2] = Math.round(Math.min(1, gl0 * (0.7 + 0.6 * v)) * 255);
-      out[o + 3] = Math.round(Math.min(1, sp0 * (0.5 + v)) * 255);
+    for (let y = 0; y < H; y++) {
+      const r = y * W, u = yu[y], d = yd[y];
+      for (let x = 0; x < W; x++) {
+        const i = r + x, o = i * 4;
+        if (em && em[i]) { out[o] = 128; out[o + 1] = 128; out[o + 2] = 230; out[o + 3] = 150; continue; }
+        const a = xl[x], b = xr[x];
+        const gx = (h[u + b] + 2 * h[r + b] + h[d + b]) - (h[u + a] + 2 * h[r + a] + h[d + a]);
+        const gy = (h[d + a] + 2 * h[d + x] + h[d + b]) - (h[u + a] + 2 * h[u + x] + h[u + b]);
+        let nx = -gx * S, ny = -gy * S;
+        const l = Math.sqrt(nx * nx + ny * ny + 1);
+        nx /= l; ny /= l;
+        const v = lum[i];
+        out[o] = (nx * 0.5 + 0.5) * 255 + 0.5;
+        out[o + 1] = (ny * 0.5 + 0.5) * 255 + 0.5;
+        out[o + 2] = Math.min(1, gl0 * (0.7 + 0.6 * v)) * 255 + 0.5;
+        out[o + 3] = Math.min(1, sp0 * (0.5 + v)) * 255 + 0.5;
+      }
     }
     return out;
   }
@@ -462,16 +517,22 @@ const GLR = (() => {
     for (const ep of Assets.concrete) for (const v of ep) v.forEach((t) => reg(t, 'concrete'));
     reg(Assets.floor[0], 'floor'); reg(Assets.floor[1], 'perf');
     Assets.ceil.forEach((t) => reg(t, 'ceil'));
-    texWalls = newArray(list.length, gl.SRGB8_ALPHA8);
-    list.forEach(([t], i) => {
+    texWalls = newArray(list.length, gl.SRGB8_ALPHA8, GT);
+    texNrm = newArray(list.length, gl.RGBA8, GT);
+    list.forEach(([t0, mat], i) => {
+      const t = t0.hires ? t0.hires(GT) : t0, size = t0.hires ? GT : TS;
       const rgba = new Uint8Array(t.px.buffer.slice(0));
       for (let k = 0; k < t.em.length; k++) rgba[k * 4 + 3] = t.em[k] ? 255 : 0;
-      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, normalMap(t, mat, size));
     });
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls);
     gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
-    texNrm = newArray(list.length, gl.RGBA8);
-    list.forEach(([t, mat], i) => gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, normalMap(t, mat)));
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm);
     gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    texDetail = detailTexture();
   }
 
   // Sprites: layers are given out on first use (CPU mips, edge dilation).
@@ -865,7 +926,7 @@ const GLR = (() => {
   precision highp float;
   in vec3 vPos; in vec2 vUv; in vec3 vNrm; in vec3 vTan; in vec3 vBit; in vec2 vMat;
   flat in float vFlags;
-  uniform sampler2D uAtlas, uAtlasN;
+  uniform sampler2D uAtlas, uAtlasN, uDetail;
   uniform float uTime;
   ${LIGHTING}
   out vec4 oColor;
@@ -873,6 +934,15 @@ const GLR = (() => {
     vec4 t = texture(uAtlas, vUv);
     vec2 nxy = texture(uAtlasN, vUv).rg * 2.0 - 1.0;
     vec3 Ng = normalize(vNrm);
+    // detail map up close, projected on the face's plane
+    float near = 1.0 - smoothstep(1.2, 3.5, length(uEye - vPos));
+    if (near > 0.0) {
+      vec3 an = abs(Ng);
+      vec2 dp = an.z > 0.7 ? vPos.xy : (an.x > an.y ? vPos.yz : vPos.xz);
+      vec4 dt = texture(uDetail, dp * 4.0);
+      t.rgb *= 1.0 + (dt.r - 0.5) * 0.25 * near;
+      nxy += (dt.gb - 0.5) * 0.35 * near;
+    }
     vec3 N = normalize(normalize(vTan) * nxy.x + normalize(vBit) * nxy.y + Ng * sqrt(max(0.0, 1.0 - dot(nxy, nxy))));
     vec3 c = shade(t.rgb, N, vPos, vPos.xy + Ng.xy * 0.04, vMat.x, vMat.y, 0.0);
     if (vFlags > 0.5) c += t.rgb * vec3(4.0, 0.3, 0.2) * (0.55 + 0.45 * sin(uTime * 20.0));
@@ -886,26 +956,27 @@ const GLR = (() => {
   const PROP_MAX = 512, propData = new Float32Array(PROP_MAX * 4);
 
   function buildProps() {
-    const D = Assets.decor, canv = [];
-    const addC = (c) => { if (c && !canv.includes(c)) canv.push(c); };
+    // faces drawn 4 times finer than the sprites' (sharp up close); rects keep the original as key
+    const D = Assets.decor, canv = [], hi = new Map();
+    const addC = (c) => { if (c && !canv.includes(c)) { canv.push(c); hi.set(c, c.hires ? c.hires(4) : c); } };
     for (const k of Object.keys(D)) {
       for (const b of D[k].boxes || []) Object.values(b.faces).forEach(addC);
       for (const c of D[k].cyls || []) { addC(c.tex); addC(c.top); }
     }
     // shelf packing, with 2 texel gutters made of stretched edges
-    const AW = 1024, PAD = 2, rects = new Map();
-    canv.sort((a, b) => b.height - a.height);
+    const AW = 2048, PAD = 2, rects = new Map();
+    canv.sort((a, b) => hi.get(b).height - hi.get(a).height);
     let x = 0, y = 0, rowH = 0;
     for (const c of canv) {
-      const w = c.width + PAD * 2, h = c.height + PAD * 2;
+      const hc = hi.get(c), w = hc.width + PAD * 2, h = hc.height + PAD * 2;
       if (x + w > AW) { x = 0; y += rowH; rowH = 0; }
-      rects.set(c, [x + PAD, y + PAD, c.width, c.height]);
+      rects.set(c, [x + PAD, y + PAD, hc.width, hc.height]);
       x += w; rowH = Math.max(rowH, h);
     }
     const AH = 1 << Math.ceil(Math.log2(Math.max(4, y + rowH)));
     const at = newCanvas(AW, AH), g = at.getContext('2d');
     g.imageSmoothingEnabled = false;
-    for (const [c, [rx, ry, cw, ch]] of rects) { g.drawImage(c, rx - PAD, ry - PAD, cw + PAD * 2, ch + PAD * 2); g.drawImage(c, rx, ry); }
+    for (const [c0, [rx, ry, cw, ch]] of rects) { const c = hi.get(c0); g.drawImage(c, rx - PAD, ry - PAD, cw + PAD * 2, ch + PAD * 2); g.drawImage(c, rx, ry); }
     const img = g.getImageData(0, 0, AW, AH);
     const upload = (fmt, data) => {
       const t = gl.createTexture();
@@ -916,7 +987,7 @@ const GLR = (() => {
       return t;
     };
     texAtlas = upload(gl.SRGB8_ALPHA8, new Uint8Array(img.data.buffer));
-    texAtlasN = upload(gl.RGBA8, heightNormals(new Uint32Array(img.data.buffer), null, AW, AH, 1.4, 0.3, 0.3));
+    texAtlasN = upload(gl.RGBA8, heightNormals(new Uint32Array(img.data.buffer), null, AW, AH, 2.8, 0.3, 0.3));
     const uvr = (c) => { const [rx, ry, cw, ch] = rects.get(c); return [(rx + 0.5) / AW, (ry + 0.5) / AH, (rx + cw - 0.5) / AW, (ry + ch - 0.5) / AH]; };
 
     const V = [];
@@ -998,6 +1069,7 @@ const GLR = (() => {
     gl.uniform1f(progProp.u.uTime, performance.now() / 1000 % 1000);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texAtlas); gl.uniform1i(progProp.u.uAtlas, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texAtlasN); gl.uniform1i(progProp.u.uAtlasN, 1);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, texDetail); gl.uniform1i(progProp.u.uDetail, 6);
     gl.bindVertexArray(propVAO);
     gl.bindBuffer(gl.ARRAY_BUFFER, propInst);
     for (const [k, first, count] of propGroups) {
@@ -1318,6 +1390,7 @@ const GLR = (() => {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texWalls); gl.uniform1i(u.uTex, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texNrm); gl.uniform1i(u.uNrm, 1);
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, !mirror && reflOn ? reflTex : texBlack); gl.uniform1i(u.uRefl, 5);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, texDetail); gl.uniform1i(u.uDetail, 6);
     gl.bindVertexArray(worldVAO);
     if (mirror) gl.drawElements(gl.TRIANGLES, worldCount - floorCount, gl.UNSIGNED_INT, floorCount * 4);
     else gl.drawElements(gl.TRIANGLES, worldCount, gl.UNSIGNED_INT, 0);

@@ -27,7 +27,22 @@ function newCanvas(w, h) {
 // Wall / floor / ceiling texture: drawn at WTEX_HI for the MODERN style, plus a
 // filtered TEX x TEX copy (`lo`) for the pixelated RETRO style.
 function makeTexture(draw, seed = 1, ledSeed = 1) {
-  const N = WTEX_HI, sc = N / 64;
+  const t = renderTexture(draw, seed, ledSeed, WTEX_HI);
+  const c2 = newCanvas(TEX, TEX), g2 = c2.getContext('2d');
+  g2.imageSmoothingEnabled = true; g2.imageSmoothingQuality = 'high';
+  g2.drawImage(t.canvas, 0, 0, TEX, TEX);
+  const lpx = new Uint32Array(g2.getImageData(0, 0, TEX, TEX).data.buffer);
+  const N = WTEX_HI, lem = new Uint8Array(TEX * TEX), f = N / TEX, em = t.em;
+  for (let j = 0; j < TEX; j++) for (let i = 0; i < TEX; i++) lem[j * TEX + i] = em[(j * f) * N + i * f] | em[(j * f + 1) * N + i * f + 1];
+  t.lo = { px: lpx, em: lem };
+  // the same texture drawn again at a higher resolution (GPU renderer), on demand
+  t.hires = (size) => renderTexture(draw, seed, ledSeed, size);
+  return t;
+}
+
+// Draws a texture from its 64x64 design at N x N: {px, em (emissive mask), canvas}.
+function renderTexture(draw, seed, ledSeed, N) {
+  const sc = N / 64;
   const c = newCanvas(N, N);
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
@@ -42,13 +57,7 @@ function makeTexture(draw, seed = 1, ledSeed = 1) {
   };
   draw(g, R, led, L);
   const px = new Uint32Array(g.getImageData(0, 0, N, N).data.buffer);
-  const c2 = newCanvas(TEX, TEX), g2 = c2.getContext('2d');
-  g2.imageSmoothingEnabled = true; g2.imageSmoothingQuality = 'high';
-  g2.drawImage(c, 0, 0, TEX, TEX);
-  const lpx = new Uint32Array(g2.getImageData(0, 0, TEX, TEX).data.buffer);
-  const lem = new Uint8Array(TEX * TEX), f = N / TEX;
-  for (let j = 0; j < TEX; j++) for (let i = 0; i < TEX; i++) lem[j * TEX + i] = em[(j * f) * N + i * f] | em[(j * f + 1) * N + i * f + 1];
-  return { px, em, canvas: c, lo: { px: lpx, em: lem } };
+  return { px, em, canvas: c };
 }
 
 // Fills a rectangle (design space) with per-texel noise around a base color.
@@ -850,12 +859,14 @@ function drawShadowIT(g, phase, atk, v = 0, dir = 1) {
 /* ------------------------------------------------- volumetric decor props */
 
 // Faces are small canvases drawn in a design space (w x h), at TS x resolution.
-function face(w, h, draw) {
-  const c = newCanvas(Math.round(w * STS), Math.round(h * STS));
+function face(w, h, draw, k = 1) {
+  const c = newCanvas(Math.round(w * STS * k), Math.round(h * STS * k));
   const g = c.getContext('2d');
   g.imageSmoothingEnabled = false;
-  g.scale(STS, STS);
+  g.scale(STS * k, STS * k);
   draw(g, w, h);
+  // the same face drawn k times finer (GPU renderer), on demand
+  if (k === 1) c.hires = (kk) => face(w, h, draw, kk);
   return c;
 }
 
