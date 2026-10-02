@@ -20,8 +20,11 @@ Two visual styles, switched with **T**, from the title screen or from the pause 
 
 - **Geometry**: the grid becomes real walls, floors and ceilings; doors slide into the wall and secret walls
   slide back as real panels. Everything is depth tested, so sprites and props sit properly in the room.
-- **Textures** keep logos, cabling and labels readable. They are stored in texture arrays with mipmaps and
-  anisotropic filtering: distant floors and racks don't shimmer.
+- **Textures** keep logos, cabling and labels readable. Walls, floors and ceilings are drawn at 512x512, props' faces
+  4 times finer than their sprites, and a detail map adds grain and micro relief up close: labels stay crisp when you
+  stand against a crate. Texture arrays with mipmaps and anisotropic filtering keep distant floors and racks from shimmering.
+- **Relief**: parallax occlusion mapping digs into walls, doors and floors (rack slots and cable bays deep, concrete
+  and floor tiles shallow). Concrete walls have baseboards and doors stand in real frames.
 - **Lighting**, computed per pixel:
   - a directional lightmap baked per level (8 texels per cell): pools of light under the ceiling panels with soft
     shadows, green glow from the exit signs, red and blue from badge doors, LED spill from the racks, ambient occlusion,
@@ -30,16 +33,20 @@ Two visual styles, switched with **T**, from the title screen or from the pause 
     floor tiles catch the light;
   - up to 16 dynamic lights (muzzle flashes, projectiles, explosions, armed UPS batteries) with wall shadows;
   - the raised floor reflects the room (planar reflection, blurred by roughness, with Fresnel).
+- **Monsters** are animated 3D models (`js/monsters3d.js`) built after their sprites: bugs scuttle on six legs, BSOD bots
+  carry a glowing blue screen for a head, the troll swings its keyboard, the spammer's mouth opens on its envelope,
+  the bosses aim their arm cannons, the Hot Spot's flames flicker, the Packet Storm's packets orbit... They walk, attack
+  and flinch, are lit by the lamps and the dynamic lights, and show in the floor's reflection. Dying ones glitch apart
+  as before.
 - **Objects**: pallets of servers, UPS batteries, water coolers and extinguishers are real meshes built from the same
-  boxes as their sprites. Monsters show 8 rotations (you can see where they look) and, like items, are lit as volumes
-  through a relief map, so lamps and explosions model them from the side. Everything standing on the floor casts a
+  boxes as their sprites; items are lit as volumes through a relief map. Everything standing on the floor casts a
   soft contact shadow.
 - **Particles**: streaking sparks that bounce, embers, smoke, debris in the monsters' colors, ejected shells.
 - **Post-processing**: HDR rendering with 4x MSAA, screen-space ambient occlusion, volumetric haze with light shafts
   under the ceiling panels, multi-level bloom, ACES tone mapping, a color grade and haze density per episode
   (icy blue in the cooling zone, sodium lamps in the archives...), vignette, slight chromatic aberration and film grain.
-- **Weapons in hand** are small 3D models (boxes and tubes) rendered in perspective with per-face lighting:
-  pixelated and outlined in RETRO, anti-aliased at 4x resolution in MODERN. They dim in dark areas and light up when firing.
+- **Weapons in hand** are 3D meshes drawn in the scene: lit by the room's lamps and by the muzzle flash, with reflections
+  on the bare metal, a rim light and bevelled edges. (RETRO and the software renderer use pre-rendered pixel versions.)
 
 Press **G** to switch to the LOW graphics mode (no reflections, dynamic lights, occlusion or haze). On a slow GPU the
 game first lowers the 3D resolution, then switches to LOW by itself. Without WebGL2, MODERN uses the previous software
@@ -238,7 +245,8 @@ docs/banner.jpg          README banner
 js/levelgen.js           procedural generator + map validation
 js/levels.js             episodes, level names, hand-drawn levels, difficulty settings
 js/textures.js           textures, rack logos, sprites
-js/weapons.js            first-person weapon models and their pre-rendering
+js/weapons.js            first-person weapon models: pre-rendered sprites and GPU meshes
+js/monsters3d.js         monsters as animated 3D models (MODERN on the GPU)
 js/gl.js                 MODERN renderer on the GPU (WebGL2)
 js/lighting.js           lightmap baking, dynamic lights, bloom
 js/retro.js              RETRO renderer: 320x200, 256 color palette, COLORMAP, 35 Hz

@@ -376,6 +376,48 @@ const GLR = (() => {
     oColor = vec4(uRaw > 0.5 ? c : tonemap(c), 1.0);
   }`;
 
+  // Monsters (monsters3d.js): rigid parts placed by a model matrix each, lit like the props.
+  const MON_VS = `#version 300 es
+  layout(location=0) in vec3 aPos;
+  layout(location=1) in vec3 aNrm;
+  layout(location=2) in vec3 aCol;
+  layout(location=3) in vec2 aUv;
+  layout(location=4) in vec3 aMat;
+  uniform mat4 uVP, uModel;
+  uniform float uMirror;
+  uniform vec2 uJitter;
+  out vec3 vPos; out vec3 vNrm; out vec3 vCol; out vec2 vUv; flat out vec3 vMat;
+  void main() {
+    vec4 wp = uModel * vec4(aPos, 1.0);
+    vPos = wp.xyz; vNrm = mat3(uModel) * aNrm; vCol = aCol; vUv = aUv; vMat = aMat;
+    gl_Position = uVP * vec4(wp.xy, wp.z * uMirror, 1.0);
+    gl_Position.xy += uJitter * gl_Position.w;
+  }`;
+  const MON_FS = `#version 300 es
+  precision highp float;
+  in vec3 vPos; in vec3 vNrm; in vec3 vCol; in vec2 vUv; flat in vec3 vMat;
+  uniform sampler2D uAtlas;
+  uniform float uFlash;
+  ${LIGHTING}
+  out vec4 oColor;
+  void main() {
+    if (uMirror < 0.0 && vPos.z < 0.0) discard;
+    int fl = int(vMat.z + 0.5);
+    vec3 alb = pow(vCol, vec3(2.2));
+    if ((fl & 2) != 0) alb *= texture(uAtlas, vUv).rgb;
+    vec3 N = normalize(vNrm), c;
+    if ((fl & 1) != 0) c = alb * uEmissive * 1.4;
+    else {
+      c = shade(alb, N, vPos, vPos.xy + N.xy * 0.05, vMat.x, vMat.y, 0.15);
+      // a touch of rim light keeps the silhouettes readable in the dark
+      vec3 V = normalize(uEye - vPos);
+      c += alb * (uAmbient * 0.5 + 0.01) * pow(1.0 - max(dot(N, V), 0.0), 2.0);
+      c = fogged(c, vPos);
+    }
+    c = mix(c, vec3(1.6), uFlash * 0.5);
+    oColor = vec4(uRaw > 0.5 ? c : tonemap(c), 1.0);
+  }`;
+
   function compile(vs, fs) {
     const mk = (type, src) => {
       const s = gl.createShader(type);
@@ -1540,6 +1582,112 @@ const GLR = (() => {
     vmMap = new Map(ranges);
   }
 
+  /* -------------------------------------------------------- monsters */
+  let progMon = null, monVAO = null, monAtlas = null, monModels = null;
+  function setMonsters(meshes) {
+    monVAO = gl.createVertexArray();
+    gl.bindVertexArray(monVAO);
+    const vb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+    gl.bufferData(gl.ARRAY_BUFFER, meshes.data, gl.STATIC_DRAW);
+    const st = meshes.stride * 4;
+    [[0, 3, 0], [1, 3, 3], [2, 3, 6], [3, 2, 9], [4, 3, 11]].forEach(([loc, size, off]) => {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, st, off * 4);
+    });
+    gl.bindVertexArray(null);
+    monAtlas = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, monAtlas);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, meshes.atlas);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    tex2D(monAtlas, gl.LINEAR_MIPMAP_LINEAR, gl.CLAMP_TO_EDGE);
+    monModels = meshes.models;
+  }
+
+  // 4x4 column-major helpers
+  const M4 = {
+    mul(a, b) {
+      const o = new Float32Array(16);
+      for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+        o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+      }
+      return o;
+    },
+    trs(tx, ty, tz) { return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, tx, ty, tz, 1]); },
+    scale(x, y, z) { return new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]); },
+    rot(axis, a) {
+      const c = Math.cos(a), s = Math.sin(a);
+      if (axis === 'z') return new Float32Array([c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+      if (axis === 'y') return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]);
+      return new Float32Array([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]);
+    },
+  };
+
+  // Local transform of a part this frame: walk cycle, attack, idle motion.
+  function partMatrix(p, e, T, t) {
+    const moving = e.state === 'chase' && !(e.painT > 0) ? 1 : 0;
+    const ph = e.animT * (e.type === 'bug' ? 14 : e.type === 'troll' ? 6 : 8) * (e.shrunk > 0 ? 1.6 : 1);
+    let atk = 0;
+    if (e.state === 'attack') atk = T.melee ? Math.sin(Math.max(0, Math.min(1, 1 - e.timer / 0.45)) * Math.PI) : 1;
+    let axis = 'y', a = 0, dz = 0, sz = 1, sxy = 1;
+    switch (p.anim) {
+      case 'legA': case 'legB': {
+        const s = Math.sin(ph + (p.anim === 'legB' ? Math.PI : 0)) * moving;
+        if (e.type === 'bug') { axis = 'z'; a = s * 0.35; } else a = s * 0.5;
+        break;
+      }
+      case 'armL': a = -Math.sin(ph) * 0.35 * moving - atk * (T.melee ? 1.6 : 0.6); break;
+      case 'gun': a = Math.sin(ph) * 0.35 * moving * (1 - atk) - atk * (T.melee ? 1.6 : 1.35); break;
+      case 'club': a = Math.sin(ph) * 0.3 * moving - atk * 2.0; break;
+      case 'head': a = Math.sin(t * 1.7 + e.x) * 0.06 - atk * 0.12; break;
+      case 'jaw': axis = 'z'; a = atk * 0.5 * (Math.sin(t * 30) * 0.5 + 0.5); break;
+      case 'body': dz = Math.abs(Math.sin(ph)) * 1.2 * moving; a = atk * (T.melee ? 0.18 : -0.08); break;
+      case 'spin': axis = 'z'; a = t * 0.9 + e.x; break;
+      case 'orbit': axis = 'z'; a = t * 2.4 + e.x; break;
+      case 'scarf': axis = 'z'; a = Math.sin(t * 7 + e.x) * 0.35; break;
+      case 'mouth': sz = 1 + atk * 1.8; break;
+      case 'flame': sz = 1 + 0.08 * Math.sin(t * 9 + p.k * 1.7) + atk * 0.15; sxy = 1 + 0.05 * Math.sin(t * 7 + p.k); break;
+      case 'bolt': sz = Math.sin(t * 23 + e.x) > -0.4 || atk ? 1 : 0.001; break;
+      default: break;
+    }
+    if (!a && !dz && sz === 1 && sxy === 1) return null;
+    const [px, py, pz] = p.pivot;
+    let m = M4.trs(px, py, pz + dz);
+    if (a) m = M4.mul(m, M4.rot(axis, a));
+    if (sz !== 1 || sxy !== 1) m = M4.mul(m, M4.scale(sxy, sxy, sz));
+    return M4.mul(m, M4.trs(-px, -py, -pz));
+  }
+
+  function drawMonsters(L, mirror) {
+    if (!monModels) return;
+    gl.useProgram(progMon.p);
+    setCommon(progMon, L, mirror);
+    const u = progMon.u, t = performance.now() / 1000;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, monAtlas); gl.uniform1i(u.uAtlas, 0);
+    gl.bindVertexArray(monVAO);
+    for (const e of L.enemies) {
+      if (!alive(e)) continue;
+      const mdl = monModels[e.type], T = ETYPES[e.type];
+      if (!mdl) continue;
+      const dx = e.x - cam.e[0], dy = e.y - cam.e[1];
+      if (dx * cam.f[0] + dy * cam.f[1] < -1.5) continue;       // behind the camera
+      // bosses are taller than the ceiling as sprites: as models they stand under it, wider instead
+      const hmax = 0.96 - T.z;
+      let k = Math.min(T.scale, hmax) / 64, kxy = k * Math.sqrt(Math.max(1, T.scale / hmax)), z = T.z;
+      if (e.type === 'drone') z += Math.sin(e.animT * 3 + e.x) * 0.05;
+      if (e.shrunk > 0) { const f = e.shrunk < 1 ? 0.3 + 0.7 * (1 - e.shrunk) : 0.3; k *= f; kxy *= f; z = 0; }
+      let base = M4.mul(M4.trs(e.x, e.y, z), M4.rot('z', e.face || 0));
+      if (e.painT > 0) base = M4.mul(base, M4.rot('y', 0.22));   // flinches back
+      base = M4.mul(base, M4.scale(kxy, kxy, k));
+      gl.uniform1f(u.uFlash, e.flash > 0 ? 1 : 0);
+      for (const p of mdl.parts) {
+        const lm = partMatrix(p, e, T, t);
+        gl.uniformMatrix4fv(u.uModel, false, lm ? M4.mul(base, lm) : base);
+        gl.drawArrays(gl.TRIANGLES, p.first, p.count);
+      }
+    }
+  }
+
   // w: {art (the 2D art of the pose), x, y (offset), rot, px, py (pivot)}, in logical px.
   function drawWeapon(L, w) {
     const m = w && vmMap.get(w.art);
@@ -1605,6 +1753,7 @@ const GLR = (() => {
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       drawWorld(L, f.anim, true);
       drawProps(L, true);
+      drawMonsters(L, true);
       drawSprites(L, true);
       drawParticles(true, true);
       gl.bindTexture(gl.TEXTURE_2D, reflTex);
@@ -1616,6 +1765,7 @@ const GLR = (() => {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     drawWorld(L, f.anim, false);
     drawProps(L, false);
+    drawMonsters(L, false);
     drawShadows();
     drawSprites(L, false);
     drawParticles(false, false);
@@ -2017,6 +2167,7 @@ const GLR = (() => {
       progWorld = compile(WORLD_VS, WORLD_FS);
       progSprite = compile(SPRITE_VS, SPRITE_FS);
       progVM = compile(VM_VS, VM_FS);
+      progMon = compile(MON_VS, MON_FS);
       initPost();
       buildWallArray();
       texSprites = newArray(SPR_CAP, gl.SRGB8_ALPHA8);
@@ -2072,6 +2223,9 @@ const GLR = (() => {
     // the weapon meshes (weapons.js build3D), keyed by the 2D art of each pose
     setWeapons(art2D, meshes) { if (ok && !vmMap.size) setWeapons(art2D, meshes); },
     get hasWeapons() { return ok && vmMap.size > 0; },
+    // the monster models (monsters3d.js build)
+    setMonsters(meshes) { if (ok && !monModels && meshes) setMonsters(meshes); },
+    get hasMonsters() { return ok && !!monModels; },
     get ok() { return ok; },
     get hdr() { return hdr; },
     get canvas() { return cv; },

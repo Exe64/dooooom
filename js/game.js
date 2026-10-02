@@ -1200,6 +1200,7 @@ function collectSprites(add, retro, gpu) {
     add(it.x, it.y, Assets.items[it.type], 0.5, floaty ? 0.05 + Math.sin(bobT + it.x) * 0.03 : 0, 0, it.type === 'r' || it.type === 'u');
   }
   for (const e of L.enemies) {
+    if (gpu && alive(e) && GLR.hasMonsters) continue;   // drawn as 3D models by gl.js
     const T = ETYPES[e.type], S = Assets.enemies[e.type];
     const R = !alive(e) ? S : gpu ? hiRotation(S, enemyRot(e)) : retro ? buildRotations(S)[enemyRot(e)] : S;
     let spr;
@@ -1772,7 +1773,7 @@ function setStyle(st, quiet) {
   if (hi) setRenderScale(MODERN_SCALE);
   else Retro.init();
   useGL = hi && !glDead && GLR.init(document.getElementById('gl'));
-  if (useGL) GLR.setWeapons(Assets.weaponsHi, Assets.weapons3D);
+  if (useGL) { GLR.setWeapons(Assets.weaponsHi, Assets.weapons3D); GLR.setMonsters(Assets.monsters3D); }
   if (GLR.canvas) GLR.canvas.style.display = useGL ? 'block' : 'none';
   view.style.background = useGL ? 'transparent' : '';
   Assets.weapons = hi ? Assets.weaponsHi : Assets.weaponsRetro;
@@ -1961,6 +1962,7 @@ function boot() {
   Assets.weaponsRetro = WeaponArt.build({ pixel: true, s: 320 / W, sy: 320 / W / 1.2 });
   Assets.weaponsHi = WeaponArt.build({ pixel: false });
   Assets.weapons3D = WeaponArt.build3D();
+  Assets.monsters3D = Monsters3D.build();
   let st = 'modern';
   try { st = localStorage.getItem('dukenutanix.style') || 'modern'; } catch (e) { /* ignored */ }
   setStyle(st, true);
